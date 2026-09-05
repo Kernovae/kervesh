@@ -1,0 +1,26 @@
+[workspace]
+members = ["crates/core", "crates/terminal", "crates/ssh", "crates/app"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "fs"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = "1"
+egui = "0.33.3"
+kervesh-core = { path = "crates/core" }
+kervesh-terminal = { path = "crates/terminal" }
+kervesh-ssh = { path = "crates/ssh" }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

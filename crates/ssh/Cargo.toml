@@ -1,0 +1,19 @@
+[package]
+name = "kervesh-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+kervesh-core.workspace = true
+zeroize.workspace = true
+russh = { version = "0.63.2", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "2.4.0"
+tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+rand = "0.10"

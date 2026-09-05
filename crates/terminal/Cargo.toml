@@ -1,0 +1,10 @@
+[package]
+name = "kervesh-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+egui.workspace = true

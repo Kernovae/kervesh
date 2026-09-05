@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kervesh
+Comment=Native SSH, SFTP and remote monitoring workspace
+Exec=kervesh
+Icon=org.kernovae.Kervesh
+Terminal=false
+Categories=Network;RemoteAccess;System;
+Keywords=SSH;SFTP;Terminal;
+StartupWMClass=Kervesh

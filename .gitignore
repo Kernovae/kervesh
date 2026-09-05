@@ -1,0 +1,42 @@
+# Rust/build
+/target/
+/artifacts/
+
+# Local Kervesh data
+*.db
+*.db-shm
+*.db-wal
+
+# Local worktrees/editor/temp
+/.worktrees/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.log
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.ppk
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Local agent/planning artifacts
+/docs/superpowers/
+/docs/plans/
+/.superpowers/
+.gemini/
+.claude/
+.codex/
+TODO.local.md
+
+# Python helper artifacts
+__pycache__/
+*.pyc
