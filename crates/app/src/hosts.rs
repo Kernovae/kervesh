@@ -1,33 +1,44 @@
-use crate::app::{App, Confirmation};
-use egui::RichText;
+use crate::{
+    app::{App, Confirmation},
+    icons::{UiIcon, ui_icon_button, ui_icon_texture},
+    theme::colors,
+};
+use egui::{Color32, Pos2, Rect, RichText, Sense, Vec2};
 use kervesh_core::{AuthMethod, secrets};
 use kervesh_ssh::FileOperation;
 
 impl App {
     pub(crate) fn host_sidebar(&mut self, ctx: &egui::Context) {
+        let dark = self.settings.dark;
+        let mut connect = None;
+        let mut edit = None;
+        let mut delete = None;
+        let mut duplicate = None;
+        let mut favorite = None;
+
         egui::SidePanel::left("hosts")
-            .default_width(238.0)
-            .width_range(190.0..=400.0)
+            .default_width(240.0)
+            .width_range(200.0..=400.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("CONNECTIONS").small().strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("+").clicked() {
+                        if ui_icon_button(ui, UiIcon::NewConnection, "New connection", dark)
+                            .clicked()
+                        {
                             self.open_new_host();
                         }
                     });
                 });
+                ui.add_space(2.0);
+
                 ui.add(
                     egui::TextEdit::singleline(&mut self.query)
-                        .hint_text("Search hosts, groups, tags")
+                        .hint_text("🔍 Search hosts, groups, tags...")
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(8.0);
-                let mut connect = None;
-                let mut edit = None;
-                let mut delete = None;
-                let mut duplicate = None;
-                let mut favorite = None;
+
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut groups: Vec<_> = self
                         .hosts
@@ -37,94 +48,186 @@ impl App {
                         .collect();
                     groups.sort();
                     groups.dedup();
+
                     for group in groups {
-                        egui::CollapsingHeader::new(if group.is_empty() {
-                            "Ungrouped"
+                        let group_hosts: Vec<_> = self
+                            .hosts
+                            .iter()
+                            .filter(|h| h.group == group && h.matches(&self.query))
+                            .collect();
+                        let count = group_hosts.len();
+
+                        let header_title = if group.is_empty() {
+                            format!("Ungrouped ({count})")
                         } else {
-                            &group
-                        })
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for host in self
-                                .hosts
-                                .iter()
-                                .filter(|h| h.group == group && h.matches(&self.query))
-                            {
-                                let connected = self
-                                    .tabs
-                                    .iter()
-                                    .any(|t| t.host.id == host.id && t.connected);
-                                let response = ui.selectable_label(
-                                    connected,
-                                    format!(
-                                        "{}  {}",
-                                        if host.favorite {
-                                            "★"
-                                        } else if connected {
-                                            "●"
+                            format!("{group} ({count})")
+                        };
+
+                        egui::CollapsingHeader::new(RichText::new(header_title).strong())
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for host in group_hosts {
+                                    let is_connected = self
+                                        .tabs
+                                        .iter()
+                                        .any(|t| t.host.id == host.id && t.connected);
+                                    let is_active = self
+                                        .tabs
+                                        .get(self.active)
+                                        .is_some_and(|t| t.host.id == host.id);
+
+                                    let mut item_rect = ui.available_rect_before_wrap();
+                                    item_rect.set_height(40.0);
+                                    let response = ui.allocate_rect(item_rect, Sense::click());
+
+                                    let bg = if is_active {
+                                        if dark {
+                                            colors::DARK_PANEL_RAISED
                                         } else {
-                                            "○"
+                                            colors::LIGHT_PANEL_RAISED
+                                        }
+                                    } else if response.hovered() {
+                                        if dark {
+                                            colors::DARK_PANEL_RAISED
+                                        } else {
+                                            colors::LIGHT_PANEL
+                                        }
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    };
+
+                                    if bg != Color32::TRANSPARENT {
+                                        let border = if dark {
+                                            colors::DARK_BORDER
+                                        } else {
+                                            colors::LIGHT_BORDER
+                                        };
+                                        ui.painter().rect(
+                                            item_rect,
+                                            4.0_f32,
+                                            bg,
+                                            egui::Stroke::new(1.0_f32, border),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
+
+                                    // Host icon
+                                    let icon_rect = Rect::from_min_size(
+                                        Pos2::new(item_rect.min.x + 8.0, item_rect.min.y + 11.0),
+                                        Vec2::splat(18.0),
+                                    );
+                                    let texture = ui_icon_texture(ui.ctx(), UiIcon::Host, dark);
+                                    let uv = Rect::from_min_max(
+                                        Pos2::new(0.0, 0.0),
+                                        Pos2::new(1.0, 1.0),
+                                    );
+                                    ui.painter()
+                                        .image(texture.id(), icon_rect, uv, Color32::WHITE);
+
+                                    // Host Name + Subtitle
+                                    let name_pos =
+                                        Pos2::new(item_rect.min.x + 32.0, item_rect.min.y + 5.0);
+                                    let sub_pos =
+                                        Pos2::new(item_rect.min.x + 32.0, item_rect.min.y + 22.0);
+
+                                    ui.painter().text(
+                                        name_pos,
+                                        egui::Align2::LEFT_TOP,
+                                        &host.name,
+                                        egui::FontId::proportional(13.0),
+                                        if dark {
+                                            colors::FOREGROUND
+                                        } else {
+                                            colors::LIGHT_FOREGROUND
                                         },
-                                        host.name
-                                    ),
-                                );
-                                if response.double_clicked() {
-                                    connect = Some(host.clone());
+                                    );
+
+                                    ui.painter().text(
+                                        sub_pos,
+                                        egui::Align2::LEFT_TOP,
+                                        &host.hostname,
+                                        egui::FontId::proportional(11.0),
+                                        if dark {
+                                            colors::MUTED
+                                        } else {
+                                            colors::LIGHT_MUTED
+                                        },
+                                    );
+
+                                    // Status Dot (green if connected, gray if disconnected)
+                                    let dot_pos =
+                                        Pos2::new(item_rect.max.x - 14.0, item_rect.center().y);
+                                    let dot_color = if is_connected {
+                                        colors::SUCCESS
+                                    } else {
+                                        colors::DISCONNECTED
+                                    };
+                                    ui.painter().circle_filled(dot_pos, 3.5_f32, dot_color);
+
+                                    if response.double_clicked() {
+                                        connect = Some(host.clone());
+                                    }
+
+                                    response
+                                        .on_hover_text(format!(
+                                            "{}@{}:{}\n{}\nDouble-click to connect",
+                                            host.username, host.hostname, host.port, host.tags
+                                        ))
+                                        .context_menu(|ui| {
+                                            if ui.button("Connect").clicked() {
+                                                connect = Some(host.clone());
+                                                ui.close();
+                                            }
+                                            if ui.button("Edit").clicked() {
+                                                edit = Some(host.clone());
+                                                ui.close();
+                                            }
+                                            if ui.button("Duplicate").clicked() {
+                                                duplicate = Some(host.duplicate());
+                                                ui.close();
+                                            }
+                                            if ui
+                                                .button(if host.favorite {
+                                                    "Remove favorite"
+                                                } else {
+                                                    "Favorite"
+                                                })
+                                                .clicked()
+                                            {
+                                                let mut h = host.clone();
+                                                h.favorite = !h.favorite;
+                                                favorite = Some(h);
+                                                ui.close();
+                                            }
+                                            if ui.button("Delete…").clicked() {
+                                                delete = Some(host.clone());
+                                                ui.close();
+                                            }
+                                        });
+
+                                    ui.allocate_space(Vec2::new(0.0, 4.0));
                                 }
-                                response
-                                    .on_hover_text(format!(
-                                        "{}@{}:{}\n{}\nDouble-click to connect",
-                                        host.username, host.hostname, host.port, host.tags
-                                    ))
-                                    .context_menu(|ui| {
-                                        if ui.button("Connect").clicked() {
-                                            connect = Some(host.clone());
-                                            ui.close();
-                                        }
-                                        if ui.button("Edit").clicked() {
-                                            edit = Some(host.clone());
-                                            ui.close();
-                                        }
-                                        if ui.button("Duplicate").clicked() {
-                                            duplicate = Some(host.duplicate());
-                                            ui.close();
-                                        }
-                                        if ui
-                                            .button(if host.favorite {
-                                                "Remove favorite"
-                                            } else {
-                                                "Favorite"
-                                            })
-                                            .clicked()
-                                        {
-                                            let mut h = host.clone();
-                                            h.favorite = !h.favorite;
-                                            favorite = Some(h);
-                                            ui.close();
-                                        }
-                                        if ui.button("Delete…").clicked() {
-                                            delete = Some(host.clone());
-                                            ui.close();
-                                        }
-                                    });
-                                ui.label(
-                                    RichText::new(format!("{}@{}", host.username, host.hostname))
-                                        .small()
-                                        .weak(),
-                                );
-                            }
-                        });
+                            });
                     }
+
                     if self.hosts.is_empty() {
-                        ui.label(
-                            RichText::new("Save your first connection to get started.").weak(),
-                        );
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("No hosts configured yet.").weak());
                     }
                 });
-                ui.add_space(12.0);
-                if ui.button("+  New connection").clicked() {
+
+                ui.add_space(8.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::Button::new(RichText::new("+ New Connection").strong()),
+                    )
+                    .clicked()
+                {
                     self.open_new_host();
                 }
+
+                ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!(
                         "{} hosts · {} sessions",
@@ -134,6 +237,7 @@ impl App {
                     .small()
                     .weak(),
                 );
+
                 if let Some(host) = connect {
                     self.begin_connect(host, ctx);
                 }

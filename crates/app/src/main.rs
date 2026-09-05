@@ -1,27 +1,4 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn workspace_opens_without_hosts_or_network_and_renders_host_form() {
-        let store = kervesh_core::Store::open_memory().unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut app = crate::app::App::new(store, runtime).unwrap();
-        let ctx = egui::Context::default();
-        let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
-        assert!(!output.shapes.is_empty());
-        assert_eq!(app.tab_count(), 0);
-        app.open_new_host();
-        let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
-        assert!(!output.shapes.is_empty());
-    }
-}
-pub mod classify;
-pub mod icons;
-pub mod theme;
-
-mod app;
-mod files;
-mod hosts;
-mod settings;
+use kervesh::app;
 
 fn load_app_icon() -> Option<std::sync::Arc<egui::IconData>> {
     let png_bytes = include_bytes!("../../../assets/app-icons/kervesh-dark-256.png");
@@ -62,4 +39,21 @@ fn main() -> anyhow::Result<()> {
     };
     eframe::run_native("Kervesh", options, Box::new(move |_cc| Ok(Box::new(app))))
         .map_err(|e| anyhow::anyhow!("Native window failed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn workspace_opens_without_hosts_or_network_and_renders_host_form() {
+        let store = kervesh_core::Store::open_memory().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut app = kervesh::app::App::new(store, runtime).unwrap();
+        let ctx = egui::Context::default();
+        let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
+        assert!(!output.shapes.is_empty());
+        assert_eq!(app.tab_count(), 0);
+        app.open_new_host();
+        let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
+        assert!(!output.shapes.is_empty());
+    }
 }

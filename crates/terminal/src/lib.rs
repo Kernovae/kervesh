@@ -9,6 +9,7 @@ use alacritty_terminal::{
 };
 pub use input::*;
 use std::sync::{Arc, Mutex};
+pub use widget::{draw_custom_glyph, is_custom_glyph};
 
 struct Size(usize, usize);
 impl Dimensions for Size {
