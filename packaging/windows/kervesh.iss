@@ -12,6 +12,7 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=..\..\assets\app-icons\kervesh.ico
 LicenseFile=..\..\LICENSE
 [Files]
 Source: "..\..\target\release\kervesh.exe"; DestDir: "{app}"; Flags: ignoreversion

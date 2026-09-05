@@ -2427,6 +2427,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui",
+ "image",
  "kervesh-core",
  "kervesh-ssh",
  "kervesh-terminal",

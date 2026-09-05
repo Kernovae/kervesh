@@ -234,7 +234,7 @@ impl App {
                     .weak(),
                 );
                 if let Some(error) = &self.form_error {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    ui.colored_label(crate::theme::colors::DANGER, error);
                 }
                 ui.horizontal(|ui| {
                     save = ui.button("Save connection").clicked();

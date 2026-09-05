@@ -1,7 +1,7 @@
 # v0.1 requirement coverage
 
 Scope: section 19, confirmed by user. Both supplied source files contain the same
-129 numbered requirement IDs. Source documents are preserved unmodified in
+129 numbered requirement IDs. Source documents are preserved in
 `docs/product-requirements.md`. Later roadmap work is not silently claimed as implemented.
 
 | Domain | Implemented | Limits / deferred |
