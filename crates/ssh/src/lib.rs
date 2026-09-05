@@ -35,6 +35,10 @@ pub enum Event {
         speed: f64,
         state: TransferState,
     },
+    FileContent {
+        path: String,
+        content: String,
+    },
     OperationComplete,
 }
 #[derive(Clone, Debug, PartialEq)]

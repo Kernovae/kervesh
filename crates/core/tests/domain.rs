@@ -123,3 +123,22 @@ fn malformed_and_guest_cpu_counters_do_not_inflate_utilization() {
     assert_eq!(b.rates(&a, 1.0).cpu, Some(20.0));
     assert_eq!(b.rates(&a, 0.0).cpu, None);
 }
+
+#[test]
+fn import_ssh_config_inserts_hosts_into_store() {
+    let store = Store::open_memory().unwrap();
+    let config = r#"
+Host production
+    HostName 192.168.1.100
+    User ops
+    Port 2200
+"#;
+    let count = store.import_ssh_config(config).unwrap();
+    assert_eq!(count, 1);
+    let hosts = store.hosts().unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].name, "production");
+    assert_eq!(hosts[0].hostname, "192.168.1.100");
+    assert_eq!(hosts[0].username, "ops");
+    assert_eq!(hosts[0].port, 2200);
+}
