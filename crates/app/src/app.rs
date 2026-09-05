@@ -15,7 +15,8 @@ use std::{
 };
 
 use crate::icons::{
-    UiIcon, paint_monogram, paint_sparkline, render_monogram, ui_icon_label_button, ui_icon_texture,
+    UiIcon, paint_arrow_down, paint_arrow_up, paint_progress_bar, paint_sparkline, render_monogram,
+    ui_icon_label_button, ui_icon_texture,
 };
 use crate::theme::colors;
 
@@ -47,9 +48,9 @@ pub(crate) struct Tab {
     pub error: Option<String>,
     pub transfers: Vec<TransferRow>,
     pub editor: Option<EditorState>,
-    pub show_overview: bool,
     pub connected_at: Option<String>,
     pub cpu_history: Vec<f32>,
+    pub mem_history: Vec<f32>,
     pub net_rx_history: Vec<f32>,
     pub net_tx_history: Vec<f32>,
 }
@@ -295,9 +296,9 @@ impl App {
             error: None,
             transfers: Vec::new(),
             editor: None,
-            show_overview: true,
             connected_at: None,
             cpu_history: Vec::new(),
+            mem_history: Vec::new(),
             net_rx_history: Vec::new(),
             net_tx_history: Vec::new(),
         });
@@ -394,6 +395,14 @@ impl App {
                             tab.cpu_history.push(cpu as f32);
                             if tab.cpu_history.len() > 30 {
                                 tab.cpu_history.remove(0);
+                            }
+                        }
+                        if let Some(used) = snapshot.memory_used() {
+                            let total = snapshot.memory.get("MemTotal").copied().unwrap_or(1);
+                            let pct = (used as f32 / total as f32) * 100.0;
+                            tab.mem_history.push(pct);
+                            if tab.mem_history.len() > 30 {
+                                tab.mem_history.remove(0);
                             }
                         }
                         let (rx, tx) = rates
@@ -850,219 +859,14 @@ impl App {
                             if ui.small_button("Reconnect").clicked() {
                                 reconnect = Some(tab.host.clone());
                             }
-                        } else if ui.small_button("Disconnect").clicked() {
-                            tab.host.auto_reconnect = false;
-                            let _ = tab.session.commands.try_send(Command::Close);
-                        }
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let meta_str = if let Some(c) = &tab.capabilities {
-                                format!("{}  |  {}  |  {}", tab.host.hostname, c.os, c.kernel)
-                            } else {
-                                format!("{}  |  Linux  |  6.12.101-1-amd64", tab.host.hostname)
-                            };
-                            ui.label(RichText::new(meta_str).small().weak());
-                        });
-                    });
-
-                    if let Some(error) = tab.error.clone() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.colored_label(colors::WARNING, error);
-                            if ui.small_button("Dismiss").clicked() {
-                                tab.error = None;
-                            }
-                        });
-                    }
-
-                    // Native Session Overview Card (matching TARGET_UI_DARK.png)
-                    if tab.show_overview && tab.connected {
-                        let card_rect = ui.available_rect_before_wrap();
-                        let card_h = 175.0;
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::new(card_rect.width(), card_h),
-                            Sense::hover(),
-                        );
-                        if ui.is_rect_visible(rect) {
-                            let bg = if dark {
-                                colors::DARK_PANEL
-                            } else {
-                                colors::LIGHT_PANEL_RAISED
-                            };
-                            let border = if dark {
-                                colors::DARK_BORDER
-                            } else {
-                                colors::LIGHT_BORDER
-                            };
-                            ui.painter().rect(
-                                rect,
-                                6.0_f32,
-                                bg,
-                                egui::Stroke::new(1.0_f32, border),
-                                egui::StrokeKind::Inside,
-                            );
-
-                            // Left: Monogram
-                            let mono_rect = Rect::from_min_size(
-                                egui::pos2(rect.min.x + 28.0, rect.min.y + 20.0),
-                                Vec2::splat(135.0),
-                            );
-                            paint_monogram(
-                                ui.painter(),
-                                mono_rect,
-                                if dark {
-                                    colors::FOREGROUND
-                                } else {
-                                    colors::LIGHT_FOREGROUND
-                                },
-                            );
-
-                            // Right: Title & Metadata Grid
-                            let content_left = rect.min.x + 190.0;
-                            ui.painter().text(
-                                egui::pos2(content_left, rect.min.y + 16.0),
-                                egui::Align2::LEFT_TOP,
-                                "K E R V E S H",
-                                egui::FontId::proportional(16.0),
-                                colors::WHITE,
-                            );
-                            ui.painter().text(
-                                egui::pos2(content_left + 125.0, rect.min.y + 18.0),
-                                egui::Align2::LEFT_TOP,
-                                "by Kernovae",
-                                egui::FontId::proportional(11.0),
-                                colors::MUTED,
-                            );
-                            ui.painter().text(
-                                egui::pos2(content_left, rect.min.y + 36.0),
-                                egui::Align2::LEFT_TOP,
-                                "Secure connections.  Greater possibilities.",
-                                egui::FontId::proportional(12.0),
-                                colors::MUTED,
-                            );
-
-                            // Divider line
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(content_left, rect.min.y + 54.0),
-                                    egui::pos2(rect.max.x - 24.0, rect.min.y + 54.0),
-                                ],
-                                egui::Stroke::new(1.0_f32, colors::DARK_BORDER),
-                            );
-
-                            // Metadata rows
-                            let os_str = tab
-                                .capabilities
-                                .as_ref()
-                                .map(|c| c.os.clone())
-                                .unwrap_or_else(|| "Debian 12 (bookworm) x86_64".into());
-                            let kernel_str = tab
-                                .capabilities
-                                .as_ref()
-                                .map(|c| c.kernel.clone())
-                                .unwrap_or_else(|| "6.12.101-1-amd64".into());
-                            let connected_str =
-                                tab.connected_at.clone().unwrap_or_else(format_current_time);
-
-                            let rows = [
-                                (
-                                    UiIcon::Monitor,
-                                    "Host",
-                                    format!("{} ({})", tab.host.name, tab.host.hostname),
-                                ),
-                                (UiIcon::Settings, "OS", os_str),
-                                (UiIcon::Inspector, "Kernel", kernel_str),
-                                (UiIcon::Host, "User", tab.host.username.clone()),
-                                (UiIcon::Search, "Connected", connected_str),
-                            ];
-
-                            let mut row_y = rect.min.y + 60.0;
-                            for (icon, label, val) in rows {
-                                let icon_r = Rect::from_min_size(
-                                    egui::pos2(content_left, row_y + 1.0),
-                                    Vec2::splat(12.0),
-                                );
-                                let icon_tex = ui_icon_texture(ui.ctx(), icon, dark);
-                                ui.painter().image(
-                                    icon_tex.id(),
-                                    icon_r,
-                                    Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
-
-                                ui.painter().text(
-                                    egui::pos2(content_left + 20.0, row_y),
-                                    egui::Align2::LEFT_TOP,
-                                    label,
-                                    egui::FontId::proportional(11.0),
-                                    colors::MUTED,
-                                );
-                                ui.painter().text(
-                                    egui::pos2(content_left + 90.0, row_y),
-                                    egui::Align2::LEFT_TOP,
-                                    &val,
-                                    egui::FontId::proportional(11.0),
-                                    if dark {
-                                        colors::FOREGROUND
-                                    } else {
-                                        colors::LIGHT_FOREGROUND
-                                    },
-                                );
-                                row_y += 16.0;
+                        } else {
+                            if ui.small_button("Disconnect").clicked() {
+                                tab.host.auto_reconnect = false;
+                                let _ = tab.session.commands.try_send(Command::Close);
                             }
 
-                            // Divider line
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(content_left, rect.min.y + 146.0),
-                                    egui::pos2(rect.max.x - 24.0, rect.min.y + 146.0),
-                                ],
-                                egui::Stroke::new(1.0_f32, colors::DARK_BORDER),
-                            );
-
-                            ui.painter().text(
-                                egui::pos2(content_left, rect.min.y + 152.0),
-                                egui::Align2::LEFT_TOP,
-                                "Open source tools for a brighter tomorrow.",
-                                egui::FontId::proportional(11.0),
-                                colors::MUTED,
-                            );
-
-                            // Close button for overview card
-                            let close_card_rect = Rect::from_min_size(
-                                egui::pos2(rect.max.x - 24.0, rect.min.y + 8.0),
-                                Vec2::splat(16.0),
-                            );
-                            let close_card_resp = ui.allocate_rect(close_card_rect, Sense::click());
-                            if close_card_resp.hovered() {
-                                ui.painter()
-                                    .rect_filled(close_card_rect, 2.0_f32, colors::SLATE);
-                            }
-                            ui.painter().text(
-                                close_card_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "×",
-                                egui::FontId::proportional(12.0),
-                                colors::MUTED,
-                            );
-                            if close_card_resp.clicked() {
-                                tab.show_overview = false;
-                            }
-                        }
-                        ui.add_space(4.0);
-                    }
-
-                    // Terminal Widget
-                    let modal = self.host_form.is_some()
-                        || self.login.is_some()
-                        || !self.trust.is_empty()
-                        || self.confirmation.is_some()
-                        || self.file_dialog.is_some()
-                        || self.settings_open
-                        || self.inspector_open
-                        || tab.editor.is_some();
-
-                    ui.add_enabled_ui(tab.connected && !modal, |ui| {
-                        ui.horizontal(|ui| {
+                            // Profile Selector in subheader
+                            ui.separator();
                             let mut profile_id = tab.terminal.profile().id.clone();
                             egui::ComboBox::from_id_salt((tab.id, "terminal-profile"))
                                 .selected_text(&tab.terminal.profile().name)
@@ -1095,7 +899,40 @@ impl App {
                                     Err(e) => tab.error = Some(e.to_string()),
                                 }
                             }
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let meta_str = if let Some(c) = &tab.capabilities {
+                                format!("{}  |  {}  |  {}", tab.host.hostname, c.os, c.kernel)
+                            } else {
+                                format!("{}  |  Linux  |  6.12.101-1-amd64", tab.host.hostname)
+                            };
+                            ui.label(RichText::new(meta_str).small().weak());
                         });
+                    });
+
+                    if let Some(error) = tab.error.clone() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(colors::WARNING, error);
+                            if ui.small_button("Dismiss").clicked() {
+                                tab.error = None;
+                            }
+                        });
+                    }
+
+                    ui.separator();
+
+                    // Terminal Widget
+                    let modal = self.host_form.is_some()
+                        || self.login.is_some()
+                        || !self.trust.is_empty()
+                        || self.confirmation.is_some()
+                        || self.file_dialog.is_some()
+                        || self.settings_open
+                        || self.inspector_open
+                        || tab.editor.is_some();
+
+                    ui.add_enabled_ui(tab.connected && !modal, |ui| {
                         let action = ui
                             .push_id(tab.id, |ui| tab.terminal.show(ui, tab.sftp_available))
                             .inner;
@@ -1202,9 +1039,11 @@ impl App {
 
         let available_w = ui.available_width();
         let card_w = ((available_w - 24.0) / 4.0).max(100.0);
-        let card_h = 58.0;
+        let card_h = 60.0;
 
         ui.horizontal(|ui| {
+            let spark_w = (card_w * 0.38).clamp(45.0, 90.0);
+
             // 1. CPU Card
             let (cpu_rect, _) = ui.allocate_exact_size(Vec2::new(card_w, card_h), Sense::hover());
             if ui.is_rect_visible(cpu_rect) {
@@ -1227,7 +1066,7 @@ impl App {
                 );
 
                 let icon_r = Rect::from_min_size(
-                    egui::pos2(cpu_rect.min.x + 8.0, cpu_rect.min.y + 8.0),
+                    egui::pos2(cpu_rect.min.x + 8.0, cpu_rect.min.y + 7.0),
                     Vec2::splat(14.0),
                 );
                 let tex = ui_icon_texture(ui.ctx(), UiIcon::Inspector, dark);
@@ -1239,7 +1078,7 @@ impl App {
                 );
 
                 ui.painter().text(
-                    egui::pos2(cpu_rect.min.x + 26.0, cpu_rect.min.y + 7.0),
+                    egui::pos2(cpu_rect.min.x + 26.0, cpu_rect.min.y + 6.0),
                     egui::Align2::LEFT_TOP,
                     "CPU",
                     egui::FontId::proportional(11.0),
@@ -1250,12 +1089,12 @@ impl App {
                     .rates
                     .cpu
                     .map(|c| format!("{c:.0}%"))
-                    .unwrap_or_else(|| "6%".into());
+                    .unwrap_or_else(|| "0%".into());
                 ui.painter().text(
-                    egui::pos2(cpu_rect.min.x + 8.0, cpu_rect.min.y + 24.0),
+                    egui::pos2(cpu_rect.min.x + 8.0, cpu_rect.min.y + 23.0),
                     egui::Align2::LEFT_TOP,
                     &cpu_str,
-                    egui::FontId::proportional(15.0),
+                    egui::FontId::proportional(16.0),
                     if dark {
                         colors::FOREGROUND
                     } else {
@@ -1263,8 +1102,25 @@ impl App {
                     },
                 );
 
+                let sub_str = if !tab.rates.cores.is_empty() {
+                    format!("{} cores", tab.rates.cores.len())
+                } else if let Some(s) = &tab.snapshot
+                    && let Some(load) = s.load
+                {
+                    format!("load {:.2}", load[0])
+                } else {
+                    "idle".into()
+                };
+                ui.painter().text(
+                    egui::pos2(cpu_rect.min.x + 8.0, cpu_rect.min.y + 42.0),
+                    egui::Align2::LEFT_TOP,
+                    sub_str,
+                    egui::FontId::proportional(10.0),
+                    colors::MUTED,
+                );
+
                 let spark_rect = Rect::from_min_max(
-                    egui::pos2(cpu_rect.min.x + 60.0, cpu_rect.min.y + 20.0),
+                    egui::pos2(cpu_rect.max.x - spark_w - 8.0, cpu_rect.min.y + 16.0),
                     egui::pos2(cpu_rect.max.x - 8.0, cpu_rect.max.y - 8.0),
                 );
                 paint_sparkline(
@@ -1297,7 +1153,7 @@ impl App {
                 );
 
                 let icon_r = Rect::from_min_size(
-                    egui::pos2(mem_rect.min.x + 8.0, mem_rect.min.y + 8.0),
+                    egui::pos2(mem_rect.min.x + 8.0, mem_rect.min.y + 7.0),
                     Vec2::splat(14.0),
                 );
                 let tex = ui_icon_texture(ui.ctx(), UiIcon::Settings, dark);
@@ -1309,7 +1165,7 @@ impl App {
                 );
 
                 ui.painter().text(
-                    egui::pos2(mem_rect.min.x + 26.0, mem_rect.min.y + 7.0),
+                    egui::pos2(mem_rect.min.x + 26.0, mem_rect.min.y + 6.0),
                     egui::Align2::LEFT_TOP,
                     "Memory",
                     egui::FontId::proportional(11.0),
@@ -1325,14 +1181,14 @@ impl App {
                         format!("{pct}%"),
                     )
                 } else {
-                    ("1.4 / 7.9 GB".into(), "18%".into())
+                    ("- / -".into(), "0%".into())
                 };
 
                 ui.painter().text(
-                    egui::pos2(mem_rect.min.x + 8.0, mem_rect.min.y + 24.0),
+                    egui::pos2(mem_rect.min.x + 8.0, mem_rect.min.y + 23.0),
                     egui::Align2::LEFT_TOP,
                     &pct_str,
-                    egui::FontId::proportional(15.0),
+                    egui::FontId::proportional(16.0),
                     if dark {
                         colors::FOREGROUND
                     } else {
@@ -1349,13 +1205,13 @@ impl App {
                 );
 
                 let spark_rect = Rect::from_min_max(
-                    egui::pos2(mem_rect.min.x + 60.0, mem_rect.min.y + 20.0),
+                    egui::pos2(mem_rect.max.x - spark_w - 8.0, mem_rect.min.y + 16.0),
                     egui::pos2(mem_rect.max.x - 8.0, mem_rect.max.y - 8.0),
                 );
                 paint_sparkline(
                     ui.painter(),
                     spark_rect,
-                    &tab.cpu_history,
+                    &tab.mem_history,
                     colors::FOREGROUND,
                 );
             }
@@ -1382,7 +1238,7 @@ impl App {
                 );
 
                 let icon_r = Rect::from_min_size(
-                    egui::pos2(disk_rect.min.x + 8.0, disk_rect.min.y + 8.0),
+                    egui::pos2(disk_rect.min.x + 8.0, disk_rect.min.y + 7.0),
                     Vec2::splat(14.0),
                 );
                 let tex = ui_icon_texture(ui.ctx(), UiIcon::Files, dark);
@@ -1394,29 +1250,30 @@ impl App {
                 );
 
                 ui.painter().text(
-                    egui::pos2(disk_rect.min.x + 26.0, disk_rect.min.y + 7.0),
+                    egui::pos2(disk_rect.min.x + 26.0, disk_rect.min.y + 6.0),
                     egui::Align2::LEFT_TOP,
                     "Disk /",
                     egui::FontId::proportional(11.0),
                     colors::MUTED,
                 );
 
-                let (disk_used_str, disk_pct_str) = if let Some(s) = &tab.snapshot
+                let (disk_used_str, disk_pct_str, disk_pct_val) = if let Some(s) = &tab.snapshot
                     && let Some(fs) = s.filesystems.iter().find(|f| f.mount == "/")
                 {
                     (
                         format!("{} / {}", bytes(fs.used), bytes(fs.used + fs.available)),
                         format!("{:.0}%", fs.percent),
+                        fs.percent,
                     )
                 } else {
-                    ("11.2 / 98 GB".into(), "11%".into())
+                    ("- / -".into(), "0%".into(), 0.0)
                 };
 
                 ui.painter().text(
-                    egui::pos2(disk_rect.min.x + 8.0, disk_rect.min.y + 24.0),
+                    egui::pos2(disk_rect.min.x + 8.0, disk_rect.min.y + 23.0),
                     egui::Align2::LEFT_TOP,
                     &disk_pct_str,
-                    egui::FontId::proportional(15.0),
+                    egui::FontId::proportional(16.0),
                     if dark {
                         colors::FOREGROUND
                     } else {
@@ -1432,15 +1289,24 @@ impl App {
                     colors::MUTED,
                 );
 
-                let spark_rect = Rect::from_min_max(
-                    egui::pos2(disk_rect.min.x + 60.0, disk_rect.min.y + 20.0),
-                    egui::pos2(disk_rect.max.x - 8.0, disk_rect.max.y - 8.0),
+                let bar_rect = Rect::from_min_max(
+                    egui::pos2(disk_rect.max.x - spark_w - 8.0, disk_rect.min.y + 28.0),
+                    egui::pos2(disk_rect.max.x - 8.0, disk_rect.min.y + 35.0),
                 );
-                paint_sparkline(
+                paint_progress_bar(
                     ui.painter(),
-                    spark_rect,
-                    &tab.cpu_history,
-                    colors::FOREGROUND,
+                    bar_rect,
+                    disk_pct_val,
+                    if dark {
+                        colors::DARK_BORDER
+                    } else {
+                        colors::LIGHT_BORDER
+                    },
+                    if disk_pct_val > 90.0 {
+                        colors::DANGER
+                    } else {
+                        colors::SUCCESS
+                    },
                 );
             }
 
@@ -1466,7 +1332,7 @@ impl App {
                 );
 
                 let icon_r = Rect::from_min_size(
-                    egui::pos2(net_rect.min.x + 8.0, net_rect.min.y + 8.0),
+                    egui::pos2(net_rect.min.x + 8.0, net_rect.min.y + 7.0),
                     Vec2::splat(14.0),
                 );
                 let tex = ui_icon_texture(ui.ctx(), UiIcon::Transfer, dark);
@@ -1478,7 +1344,7 @@ impl App {
                 );
 
                 ui.painter().text(
-                    egui::pos2(net_rect.min.x + 26.0, net_rect.min.y + 7.0),
+                    egui::pos2(net_rect.min.x + 26.0, net_rect.min.y + 6.0),
                     egui::Align2::LEFT_TOP,
                     "Network",
                     egui::FontId::proportional(11.0),
@@ -1492,10 +1358,17 @@ impl App {
                     .filter(|(name, _)| name.as_str() != "lo")
                     .fold((0.0, 0.0), |(rx, tx), (_, n)| (rx + n.0, tx + n.1));
 
+                // Vector down arrow (RX)
+                paint_arrow_down(
+                    ui.painter(),
+                    egui::pos2(net_rect.min.x + 8.0, net_rect.min.y + 26.0),
+                    7.0_f32,
+                    colors::SUCCESS,
+                );
                 ui.painter().text(
-                    egui::pos2(net_rect.min.x + 8.0, net_rect.min.y + 24.0),
+                    egui::pos2(net_rect.min.x + 19.0, net_rect.min.y + 23.0),
                     egui::Align2::LEFT_TOP,
-                    format!("↓ {}/s", bytes(rx as u64)),
+                    format!("{}/s", bytes(rx as u64)),
                     egui::FontId::proportional(11.0),
                     if dark {
                         colors::FOREGROUND
@@ -1504,16 +1377,23 @@ impl App {
                     },
                 );
 
+                // Vector up arrow (TX)
+                paint_arrow_up(
+                    ui.painter(),
+                    egui::pos2(net_rect.min.x + 8.0, net_rect.min.y + 42.0),
+                    7.0_f32,
+                    Color32::from_rgb(0x60, 0xA5, 0xFA),
+                );
                 ui.painter().text(
-                    egui::pos2(net_rect.min.x + 8.0, net_rect.min.y + 40.0),
+                    egui::pos2(net_rect.min.x + 19.0, net_rect.min.y + 39.0),
                     egui::Align2::LEFT_TOP,
-                    format!("↑ {}/s", bytes(tx as u64)),
+                    format!("{}/s", bytes(tx as u64)),
                     egui::FontId::proportional(11.0),
                     colors::MUTED,
                 );
 
                 let spark_rect = Rect::from_min_max(
-                    egui::pos2(net_rect.min.x + 75.0, net_rect.min.y + 20.0),
+                    egui::pos2(net_rect.max.x - spark_w - 8.0, net_rect.min.y + 16.0),
                     egui::pos2(net_rect.max.x - 8.0, net_rect.max.y - 8.0),
                 );
                 paint_sparkline(

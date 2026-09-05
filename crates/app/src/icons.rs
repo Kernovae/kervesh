@@ -405,3 +405,36 @@ pub fn paint_sparkline(painter: &Painter, rect: Rect, values: &[f32], color: Col
         egui::Stroke::new(1.5_f32, color),
     ));
 }
+
+pub fn paint_progress_bar(painter: &Painter, rect: Rect, pct: f32, bg: Color32, fg: Color32) {
+    painter.rect_filled(rect, 2.5_f32, bg);
+    let fill_w = (rect.width() * (pct / 100.0_f32).clamp(0.0, 1.0)).max(2.0);
+    let fill_rect = Rect::from_min_max(rect.min, egui::pos2(rect.min.x + fill_w, rect.max.y));
+    painter.rect_filled(fill_rect, 2.5_f32, fg);
+}
+
+pub fn paint_arrow_down(painter: &Painter, pos: egui::Pos2, size: f32, color: Color32) {
+    let pts = vec![
+        egui::pos2(pos.x, pos.y),
+        egui::pos2(pos.x + size, pos.y),
+        egui::pos2(pos.x + size * 0.5, pos.y + size * 0.75),
+    ];
+    painter.add(egui::epaint::PathShape::convex_polygon(
+        pts,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
+pub fn paint_arrow_up(painter: &Painter, pos: egui::Pos2, size: f32, color: Color32) {
+    let pts = vec![
+        egui::pos2(pos.x + size * 0.5, pos.y),
+        egui::pos2(pos.x, pos.y + size * 0.75),
+        egui::pos2(pos.x + size, pos.y + size * 0.75),
+    ];
+    painter.add(egui::epaint::PathShape::convex_polygon(
+        pts,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
