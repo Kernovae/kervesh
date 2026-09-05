@@ -166,6 +166,7 @@ impl Terminal {
                     || response.triple_clicked())
                 && let Some(text) = self.selection_text()
             {
+                crate::set_clipboard_text(&text);
                 ui.ctx().copy_text(text);
             }
             if response.hovered() && !mouse_mode {
@@ -191,14 +192,28 @@ impl Terminal {
                 response.context_menu(|ui| {
                     if ui.button("Copy").clicked() {
                         if let Some(text) = self.selection_text() {
+                            crate::set_clipboard_text(&text);
                             ui.ctx().copy_text(text);
                         }
                         ui.close();
                     }
                     if ui.button("Paste").clicked() {
-                        self.paste_requested = true;
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                        if let Some(text) = crate::get_clipboard_text() {
+                            if self.profile.multiline_paste_policy != MultilinePastePolicy::Off
+                                && crate::paste_lines(&text) > 1
+                            {
+                                self.pending_paste = Some(text);
+                            } else {
+                                action.input.extend(encode_paste(
+                                    &text,
+                                    mode.contains(TermMode::BRACKETED_PASTE),
+                                ));
+                            }
+                        } else {
+                            self.paste_requested = true;
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                        }
                         response.request_focus();
                         ui.close();
                     }
@@ -236,14 +251,30 @@ impl Terminal {
                         match intent {
                             ClipboardIntent::Copy => {
                                 if let Some(text) = self.selection_text() {
+                                    crate::set_clipboard_text(&text);
                                     ui.ctx().copy_text(text);
                                 }
                             }
                             ClipboardIntent::Control(byte) => action.input.push(byte),
                             ClipboardIntent::RequestPaste => {
-                                self.paste_requested = true;
-                                ui.ctx()
-                                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                                if let Some(text) = crate::get_clipboard_text() {
+                                    if self.profile.multiline_paste_policy
+                                        != MultilinePastePolicy::Off
+                                        && crate::paste_lines(&text) > 1
+                                    {
+                                        self.pending_paste = Some(text);
+                                        break;
+                                    } else {
+                                        action.input.extend(encode_paste(
+                                            &text,
+                                            mode.contains(TermMode::BRACKETED_PASTE),
+                                        ));
+                                    }
+                                } else {
+                                    self.paste_requested = true;
+                                    ui.ctx()
+                                        .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                                }
                             }
                             ClipboardIntent::Paste => {
                                 if let Event::Paste(text) = event {

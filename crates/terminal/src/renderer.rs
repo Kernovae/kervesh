@@ -132,15 +132,19 @@ impl Terminal {
             } else {
                 cell.x
             };
-            painter
-                .with_clip_rect(Rect::from_min_size(pos, vec2(width, cell.y)).intersect(rect))
-                .text(
-                    pos + vec2(0.0, y_offset),
-                    Align2::LEFT_TOP,
-                    text,
-                    font.clone(),
-                    fg,
-                );
+            if crate::is_custom_glyph(data.c) && data.zerowidth().is_none() {
+                crate::draw_custom_glyph(&painter, cell_rect, data.c, fg);
+            } else {
+                painter
+                    .with_clip_rect(Rect::from_min_size(pos, vec2(width, cell.y)).intersect(rect))
+                    .text(
+                        pos + vec2(0.0, y_offset),
+                        Align2::LEFT_TOP,
+                        text,
+                        font.clone(),
+                        fg,
+                    );
+            }
             if data.flags.intersects(Flags::ALL_UNDERLINES) {
                 painter.line_segment(
                     [

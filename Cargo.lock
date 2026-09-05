@@ -2474,6 +2474,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "alacritty_terminal",
+ "arboard",
  "egui",
  "kervesh-core",
 ]

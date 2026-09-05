@@ -88,6 +88,107 @@ fn traditional_and_shift_shortcuts_and_literal_controls() {
     );
 }
 #[test]
+fn insert_and_key_shortcuts() {
+    let shift_insert = Event::Key {
+        key: Key::Insert,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::SHIFT,
+    };
+    assert_eq!(
+        clipboard_intent(
+            &shift_insert,
+            Modifiers::SHIFT,
+            ClipboardProfile::Desktop,
+            false,
+            false
+        ),
+        Some(ClipboardIntent::RequestPaste)
+    );
+    assert_eq!(
+        clipboard_intent(
+            &shift_insert,
+            Modifiers::SHIFT,
+            ClipboardProfile::Traditional,
+            false,
+            false
+        ),
+        Some(ClipboardIntent::RequestPaste)
+    );
+
+    let ctrl_insert = Event::Key {
+        key: Key::Insert,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::CTRL,
+    };
+    assert_eq!(
+        clipboard_intent(
+            &ctrl_insert,
+            Modifiers::CTRL,
+            ClipboardProfile::Desktop,
+            true,
+            false
+        ),
+        Some(ClipboardIntent::Copy)
+    );
+
+    let ctrl_shift_c = Event::Key {
+        key: Key::C,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        },
+    };
+    assert_eq!(
+        clipboard_intent(
+            &ctrl_shift_c,
+            Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::NONE
+            },
+            ClipboardProfile::Traditional,
+            true,
+            false
+        ),
+        Some(ClipboardIntent::Copy)
+    );
+
+    let ctrl_shift_v = Event::Key {
+        key: Key::V,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        },
+    };
+    assert_eq!(
+        clipboard_intent(
+            &ctrl_shift_v,
+            Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::NONE
+            },
+            ClipboardProfile::Traditional,
+            false,
+            false
+        ),
+        Some(ClipboardIntent::RequestPaste)
+    );
+}
+
+#[test]
 fn paste_preserves_contents_and_normalizes_both_protocols() {
     assert_eq!(
         encode_paste("a\r\nb\rc\n", true),

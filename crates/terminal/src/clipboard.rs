@@ -9,6 +9,19 @@ pub enum ClipboardIntent {
     Control(u8),
 }
 
+pub fn get_clipboard_text() -> Option<String> {
+    arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut cb| cb.get_text().ok())
+        .filter(|s| !s.is_empty())
+}
+
+pub fn set_clipboard_text(text: &str) {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(text);
+    }
+}
+
 /// Resolve both native clipboard events and raw keys without reading clipboard contents.
 pub fn clipboard_intent(
     event: &Event,
@@ -38,46 +51,66 @@ pub fn clipboard_intent(
             return Some(ClipboardIntent::Control(byte));
         }
     }
-    let copy = match event {
-        Event::Copy => true,
-        Event::Key {
-            key: Key::C,
-            pressed: true,
-            ..
-        } if modifiers.ctrl => true,
-        _ => false,
-    };
-    if copy {
-        return Some(
+
+    match event {
+        Event::Copy => {
             if modifiers.ctrl
                 && !modifiers.shift
                 && (profile == ClipboardProfile::Traditional || !selected)
             {
-                ClipboardIntent::Control(3)
+                Some(ClipboardIntent::Control(3))
             } else {
-                ClipboardIntent::Copy
-            },
-        );
-    }
-    match event {
-        Event::Cut if modifiers.ctrl => Some(ClipboardIntent::Control(24)),
-        Event::Paste(_)
-            if modifiers.ctrl && !modifiers.shift && profile == ClipboardProfile::Traditional =>
-        {
-            Some(ClipboardIntent::Control(22))
+                Some(ClipboardIntent::Copy)
+            }
         }
-        Event::Paste(_) => Some(ClipboardIntent::Paste),
+        Event::Cut if modifiers.ctrl && !modifiers.shift => Some(ClipboardIntent::Control(24)),
+        Event::Paste(_) => {
+            if modifiers.ctrl && !modifiers.shift && profile == ClipboardProfile::Traditional {
+                Some(ClipboardIntent::Control(22))
+            } else {
+                Some(ClipboardIntent::Paste)
+            }
+        }
+        Event::Key {
+            key: Key::Insert,
+            pressed: true,
+            ..
+        } => {
+            if modifiers.shift {
+                Some(ClipboardIntent::RequestPaste)
+            } else if modifiers.ctrl {
+                Some(ClipboardIntent::Copy)
+            } else {
+                None
+            }
+        }
+        Event::Key {
+            key: Key::C,
+            pressed: true,
+            ..
+        } if modifiers.ctrl => {
+            if !modifiers.shift && (profile == ClipboardProfile::Traditional || !selected) {
+                Some(ClipboardIntent::Control(3))
+            } else {
+                Some(ClipboardIntent::Copy)
+            }
+        }
         Event::Key {
             key: Key::V,
             pressed: true,
             ..
-        } if modifiers.ctrl => Some(
+        } if modifiers.ctrl => {
             if !modifiers.shift && profile == ClipboardProfile::Traditional {
-                ClipboardIntent::Control(22)
+                Some(ClipboardIntent::Control(22))
             } else {
-                ClipboardIntent::RequestPaste
-            },
-        ),
+                Some(ClipboardIntent::RequestPaste)
+            }
+        }
+        Event::Key {
+            key: Key::X,
+            pressed: true,
+            ..
+        } if modifiers.ctrl && !modifiers.shift => Some(ClipboardIntent::Control(24)),
         _ => None,
     }
 }

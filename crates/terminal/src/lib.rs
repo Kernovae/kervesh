@@ -1,3 +1,4 @@
+mod glyph;
 mod hyperlink;
 mod input;
 mod renderer;
@@ -11,6 +12,7 @@ use alacritty_terminal::{
     term::{Config, Osc52},
     vte::ansi,
 };
+pub use glyph::*;
 pub use hyperlink::{RemoteDirectory, safe_url};
 pub use input::*;
 pub use search::SearchMatch;
