@@ -117,6 +117,20 @@ async fn real_ssh_key_trust_shell_sftp_monitor_and_session_isolation() {
     let snapshot = kervesh_core::Snapshot::parse(&stats).unwrap();
     assert!(snapshot.memory_used().is_some());
     assert!(!snapshot.filesystems.is_empty());
+
+    let edit_path = format!("{root}/editable.txt");
+    kervesh_ssh::write_file(&sftp, &edit_path, "initial content")
+        .await
+        .unwrap();
+    let read_back = kervesh_ssh::read_file(&sftp, &edit_path).await.unwrap();
+    assert_eq!(read_back, "initial content");
+    kervesh_ssh::write_file(&sftp, &edit_path, "updated content")
+        .await
+        .unwrap();
+    let read_back_updated = kervesh_ssh::read_file(&sftp, &edit_path).await.unwrap();
+    assert_eq!(read_back_updated, "updated content");
+    sftp.remove_file(&edit_path).await.unwrap();
+
     sftp.remove_file(&file).await.unwrap();
     remote.disconnect().await.unwrap();
     assert_eq!(

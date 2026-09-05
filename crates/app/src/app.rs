@@ -37,6 +37,15 @@ pub(crate) struct Tab {
     pub paused: bool,
     pub error: Option<String>,
     pub transfers: Vec<TransferRow>,
+    pub editor: Option<EditorState>,
+}
+pub(crate) struct EditorState {
+    pub path: String,
+    pub name: String,
+    pub content: String,
+    pub dirty: bool,
+    pub saving: bool,
+    pub error: Option<String>,
 }
 pub(crate) struct TransferRow {
     pub request: TransferRequest,
@@ -200,6 +209,7 @@ impl App {
             paused: false,
             error: None,
             transfers: Vec::new(),
+            editor: None,
         });
         self.active = self.tabs.len() - 1;
     }
@@ -275,6 +285,12 @@ impl App {
                         }
                     }
                     Event::Error(error) => {
+                        if let Some(editor) = &mut tab.editor
+                            && editor.saving
+                        {
+                            editor.saving = false;
+                            editor.error = Some(error.clone());
+                        }
                         tab.error = Some(error);
                         tab.busy = false;
                     }
@@ -290,7 +306,24 @@ impl App {
                         tab.selected = None;
                         tab.busy = false;
                     }
+                    Event::FileContent { path, content } => {
+                        tab.editor = Some(EditorState {
+                            name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                            path,
+                            content,
+                            dirty: false,
+                            saving: false,
+                            error: None,
+                        });
+                        tab.busy = false;
+                    }
                     Event::OperationComplete => {
+                        if let Some(editor) = &mut tab.editor
+                            && editor.saving
+                        {
+                            editor.saving = false;
+                            editor.dirty = false;
+                        }
                         let _ = tab
                             .session
                             .commands
@@ -540,7 +573,8 @@ impl App {
                         || self.confirmation.is_some()
                         || self.file_dialog.is_some()
                         || self.settings_open
-                        || self.inspector_open;
+                        || self.inspector_open
+                        || tab.editor.is_some();
                     ui.add_enabled_ui(tab.connected && !modal, |ui| {
                         let action = tab.terminal.ui(ui, self.settings.font_size);
                         if let Some((cols, rows)) = action.resize {
@@ -566,6 +600,7 @@ impl App {
         self.login_dialog(ctx);
         self.trust_dialog(ctx);
         self.file_action_dialog(ctx);
+        self.file_editor_window(ctx);
         self.confirm_dialog(ctx);
         self.settings_dialog(ctx);
         self.inspector(ctx);

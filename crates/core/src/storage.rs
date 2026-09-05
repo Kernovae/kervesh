@@ -145,6 +145,31 @@ impl Store {
         tx.commit()?;
         Ok(data.hosts.len())
     }
+    pub fn import_ssh_config(&self, content: &str) -> Result<usize> {
+        ensure!(content.len() <= 10 * 1024 * 1024, "File exceeds 10 MB");
+        let hosts = crate::ssh_config::parse_ssh_config(content);
+        if hosts.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction()?;
+        let count = hosts.len();
+        for h in hosts {
+            tx.execute(
+                "INSERT INTO hosts(id,data) VALUES(?1,?2)",
+                params![h.id, serde_json::to_string(&h)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+    pub fn import_default_ssh_config(&self) -> Result<usize> {
+        let path = crate::ssh_config::default_ssh_config_path()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        ensure!(path.exists(), "~/.ssh/config does not exist");
+        let content = std::fs::read_to_string(&path)?;
+        self.import_ssh_config(&content)
+    }
     pub fn check_trust(&self, host: &str, port: u16, fingerprint: &str) -> Result<Trust> {
         let known: Option<String> = self
             .lock()?

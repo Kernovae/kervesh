@@ -227,12 +227,16 @@ impl App {
                                         operation = Some((id, FileOperation::List(path.clone())));
                                         ui.close();
                                     }
-                                    if !entry.directory
-                                        && !entry.symlink
-                                        && ui.button("Download…").clicked()
-                                    {
-                                        download = Some((id, path.clone(), entry.name.clone()));
-                                        ui.close();
+                                    if !entry.directory && !entry.symlink {
+                                        if ui.button("Edit…").clicked() {
+                                            operation =
+                                                Some((id, FileOperation::Read(path.clone())));
+                                            ui.close();
+                                        }
+                                        if ui.button("Download…").clicked() {
+                                            download = Some((id, path.clone(), entry.name.clone()));
+                                            ui.close();
+                                        }
                                     }
                                     ui.separator();
                                     if ui.button("Copy remote path").clicked() {
@@ -371,6 +375,73 @@ impl App {
         }
         if open {
             self.file_dialog = Some(dialog);
+        }
+    }
+
+    pub(crate) fn file_editor_window(&mut self, ctx: &egui::Context) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let Some(editor) = &mut tab.editor else {
+            return;
+        };
+        let mut open = true;
+        let mut save = false;
+        let tab_id = tab.id;
+        let title = format!(
+            "Edit — {}{}",
+            editor.name,
+            if editor.dirty { " *" } else { "" }
+        );
+
+        egui::Window::new(title)
+            .open(&mut open)
+            .default_width(700.0)
+            .default_height(500.0)
+            .resizable(true)
+            .vscroll(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.monospace(&editor.path);
+                    if editor.saving {
+                        ui.spinner();
+                        ui.label("Saving…");
+                    } else if ui.button("Save").clicked() {
+                        save = true;
+                    }
+                    if editor.dirty {
+                        ui.colored_label(colors::WARNING, "Unsaved changes");
+                    }
+                });
+                if let Some(error) = &editor.error {
+                    ui.colored_label(colors::DANGER, error);
+                }
+                ui.separator();
+                egui::ScrollArea::both().show(ui, |ui| {
+                    let text_edit = egui::TextEdit::multiline(&mut editor.content)
+                        .font(egui::TextStyle::Monospace)
+                        .code_editor()
+                        .desired_rows(24)
+                        .desired_width(f32::INFINITY);
+                    let response = ui.add(text_edit);
+                    if response.changed() {
+                        editor.dirty = true;
+                    }
+                });
+            });
+
+        let to_save = if save {
+            editor.saving = true;
+            editor.error = None;
+            Some((editor.path.clone(), editor.content.clone()))
+        } else {
+            None
+        };
+        if !open {
+            tab.editor = None;
+        }
+        if let Some((path, content)) = to_save {
+            self.send(tab_id, Command::File(FileOperation::Write(path, content)));
         }
     }
 

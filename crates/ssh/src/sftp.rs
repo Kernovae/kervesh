@@ -23,6 +23,8 @@ pub enum FileOperation {
     Rename(String, String),
     Delete(String, bool),
     Permissions(String, u32),
+    Read(String),
+    Write(String, String),
 }
 pub fn remote_join(parent: &str, name: &str) -> Result<String> {
     ensure!(
@@ -61,6 +63,35 @@ pub async fn list(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteE
     });
     Ok((path, entries))
 }
+pub async fn read_file(sftp: &SftpSession, path: &str) -> Result<String> {
+    use tokio::io::AsyncReadExt;
+    let meta = sftp.metadata(path).await?;
+    ensure!(meta.is_regular(), "Selected path is not a regular file");
+    ensure!(
+        meta.size.unwrap_or(0) <= 2 * 1024 * 1024,
+        "File exceeds 2 MB limit for inline editor"
+    );
+    let mut file = sftp.open(path).await?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await?;
+    let _ = file.close().await;
+    let content =
+        String::from_utf8(buffer).map_err(|_| anyhow::anyhow!("File is not valid UTF-8 text"))?;
+    Ok(content)
+}
+pub async fn write_file(sftp: &SftpSession, path: &str, content: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = sftp
+        .open_with_flags(
+            path,
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+        )
+        .await?;
+    file.write_all(content.as_bytes()).await?;
+    file.flush().await?;
+    let _ = file.close().await;
+    Ok(())
+}
 pub async fn operate(sftp: &SftpSession, operation: FileOperation) -> Result<()> {
     match operation {
         FileOperation::CreateFile(path) => {
@@ -92,7 +123,7 @@ pub async fn operate(sftp: &SftpSession, operation: FileOperation) -> Result<()>
             )
             .await?;
         }
-        FileOperation::List(_) => {}
+        FileOperation::List(_) | FileOperation::Read(_) | FileOperation::Write(_, _) => {}
     }
     Ok(())
 }

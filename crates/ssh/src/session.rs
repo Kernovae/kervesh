@@ -180,6 +180,22 @@ async fn run(
                             }
                             Err(e) => Err(e),
                         },
+                        FileOperation::Read(path) => match read_file(&sftp, &path).await {
+                            Ok(content) => {
+                                file_events.send(Event::FileContent { path, content }).await;
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        },
+                        FileOperation::Write(path, content) => {
+                            match write_file(&sftp, &path, &content).await {
+                                Ok(()) => {
+                                    file_events.send(Event::OperationComplete).await;
+                                    Ok(())
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
                         action => {
                             let result = operate(&sftp, action).await;
                             if result.is_ok() {
