@@ -156,6 +156,7 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
         };
 
         let host = Host {
+            terminal_profile: None,
             id: Uuid::new_v4().to_string(),
             name: alias,
             hostname,

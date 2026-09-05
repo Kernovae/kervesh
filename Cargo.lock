@@ -2472,8 +2472,10 @@ dependencies = [
 name = "kervesh-terminal"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "alacritty_terminal",
  "egui",
+ "kervesh-core",
 ]
 
 [[package]]

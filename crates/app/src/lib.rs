@@ -6,3 +6,6 @@ pub mod app;
 pub mod files;
 pub mod hosts;
 pub mod settings;
+
+mod bell;
+mod terminal_settings;

@@ -8,3 +8,5 @@ license.workspace = true
 [dependencies]
 alacritty_terminal = "0.26.0"
 egui.workspace = true
+kervesh-core.workspace = true
+ab_glyph = "0.2.32"

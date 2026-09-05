@@ -2,6 +2,29 @@
 
 This document outlines upcoming capabilities and engineering milestones for Kervesh.
 
+## v0.1.x — Terminal Foundation
+
+Implemented foundation:
+- Explicit terminal font families, ordered local font fallbacks, bundled Hack bold,
+  coverage regression tests and removal of manual Unicode drawing tables.
+- Desktop/Traditional clipboard profiles, smart copy/interrupt, literal controls,
+  multiline preview, bracketed paste, semantic/line selection and mouse override.
+- Persisted terminal profiles with host bindings and explicit session-to-host save.
+- Independent dark/light/custom terminal palettes, cursor shape/blink and native settings.
+- Local scrollback search, OSC 8/HTTP links and deliberate SFTP path reveal.
+- Optional OSC 7 directory following with host matching and manual-navigation pause.
+
+### v0.1.2 qualification
+- Windows native verification, Wayland capture and interactive full-screen application matrix.
+- Font geometry across more fonts/scales, broader CJK/complex-script coverage and custom-font bold faces.
+- Wrapped plain-URL detection and richer underline decoration variants.
+
+### v0.1.3 extensions
+- Optional shell integration installer and command lifecycle metadata, following the documented protocol.
+- Regex search, command blocks, arbitrary keybinding editor and advanced font diagnostics.
+
+Implementation and observed validation: [Terminal Foundation](docs/terminal-foundation.md).
+
 ## v0.2 — Connectivity & Remote Editing
 
 - **Bastion & Jump Hosts**: SSH ProxyJump and ProxyCommand support for multi-hop bastion topologies.

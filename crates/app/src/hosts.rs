@@ -311,6 +311,26 @@ impl App {
                             });
                             ui.end_row();
                         }
+                        ui.label("Terminal profile");
+                        egui::ComboBox::from_id_salt("host-terminal-profile")
+                            .selected_text(
+                                host.terminal_profile.as_deref().unwrap_or("Global default"),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut host.terminal_profile,
+                                    None,
+                                    "Global default",
+                                );
+                                for profile in &self.settings.terminal_profiles {
+                                    ui.selectable_value(
+                                        &mut host.terminal_profile,
+                                        Some(profile.id.clone()),
+                                        &profile.name,
+                                    );
+                                }
+                            });
+                        ui.end_row();
                         field(ui, "Group", &mut host.group);
                         field(ui, "Tags", &mut host.tags);
                         ui.label("Timeout (seconds)");

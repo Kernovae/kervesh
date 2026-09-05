@@ -7,7 +7,7 @@ use kervesh_core::{
 use kervesh_ssh::{
     Command, Event, FileOperation, RemoteEntry, Session, TransferRequest, TransferState,
 };
-use kervesh_terminal::Terminal;
+use kervesh_terminal::{Terminal, TerminalFontConfig, TerminalFontManager};
 use std::{
     collections::VecDeque,
     sync::{Arc, mpsc as std_mpsc},
@@ -25,6 +25,10 @@ pub(crate) struct Tab {
     pub session: Session,
     pub terminal: Terminal,
     pub connected: bool,
+    pub sftp_available: bool,
+    pub follow_suspended: bool,
+    pub last_followed: Option<String>,
+    pub reveal_name: Option<String>,
     pub status: String,
     pub credentials: Credentials,
     pub retry_at: Option<Instant>,
@@ -159,6 +163,7 @@ pub struct App {
     pub(crate) secret_tx: std_mpsc::Sender<(String, Result<Option<zeroize::Zeroizing<String>>>)>,
     secret_rx: std_mpsc::Receiver<(String, Result<Option<zeroize::Zeroizing<String>>>)>,
     theme: Option<bool>,
+    pub(crate) terminal_fonts: TerminalFontManager,
     pub(crate) allow_quit: bool,
 }
 
@@ -192,8 +197,24 @@ impl App {
             secret_tx,
             secret_rx,
             theme: None,
+            terminal_fonts: TerminalFontManager::default(),
             allow_quit: false,
         })
+    }
+
+    pub(crate) fn register_terminal_fonts(&mut self, ctx: &egui::Context) {
+        let mut configs: Vec<_> = self
+            .settings
+            .terminal_profiles
+            .iter()
+            .map(TerminalFontConfig::from)
+            .collect();
+        configs.extend(
+            self.tabs
+                .iter()
+                .map(|t| TerminalFontConfig::from(t.terminal.profile())),
+        );
+        self.terminal_fonts.register(ctx, &configs);
     }
 
     pub fn tab_count(&self) -> usize {
@@ -242,12 +263,20 @@ impl App {
             self.settings.monitor_secs,
             Arc::new(move || wake.request_repaint()),
         );
+        let profile = self
+            .settings
+            .terminal_profile(login.host.terminal_profile.as_deref())
+            .clone();
         self.tabs.push(Tab {
             id: self.next_id,
             host: login.host,
             session,
-            terminal: Terminal::new(100, 30, self.settings.scrollback),
+            terminal: Terminal::with_profile(100, 30, profile),
             connected: false,
+            sftp_available: false,
+            follow_suspended: false,
+            last_followed: None,
+            reveal_name: None,
             status: "Connecting…".into(),
             credentials: login.credentials,
             retry_at: None,
@@ -336,6 +365,7 @@ impl App {
                             tab.retry_at = Some(Instant::now() + Duration::from_secs(3));
                         }
                         tab.connected = false;
+                        tab.sftp_available = false;
                         tab.busy = false;
                         tab.status = reason;
                         for transfer in &mut tab.transfers {
@@ -383,10 +413,14 @@ impl App {
                         tab.rates = rates;
                     }
                     Event::Directory { path, entries } => {
+                        tab.sftp_available = true;
                         tab.path = path.clone();
                         tab.path_input = path;
                         tab.entries = entries;
-                        tab.selected = None;
+                        tab.selected = tab
+                            .reveal_name
+                            .take()
+                            .and_then(|name| tab.entries.iter().find(|e| e.name == name).cloned());
                         tab.busy = false;
                     }
                     Event::FileContent { path, content } => {
@@ -430,6 +464,33 @@ impl App {
                     }
                 }
             }
+            if tab.connected
+                && tab.sftp_available
+                && !tab.busy
+                && !tab.follow_suspended
+                && tab.terminal.profile().follow_terminal_directory
+                && let Some(directory) = tab.terminal.directory()
+                && !directory.host.is_empty()
+                && (directory.host.eq_ignore_ascii_case(&tab.host.hostname)
+                    || tab
+                        .capabilities
+                        .as_ref()
+                        .is_some_and(|c| directory.host.eq_ignore_ascii_case(&c.hostname)))
+                && tab.last_followed.as_deref() != Some(&directory.path)
+            {
+                let path = directory.path.clone();
+                if path == tab.path {
+                    tab.last_followed = Some(path);
+                } else if tab
+                    .session
+                    .commands
+                    .try_send(Command::File(FileOperation::List(path.clone())))
+                    .is_ok()
+                {
+                    tab.last_followed = Some(path);
+                    tab.busy = true;
+                }
+            }
             if !tab.session.events.is_empty() {
                 ctx.request_repaint();
             }
@@ -462,6 +523,7 @@ impl App {
     }
 
     pub fn render(&mut self, ctx: &egui::Context) {
+        self.register_terminal_fonts(ctx);
         self.pump(ctx);
         let dark = self.settings.dark;
 
@@ -1000,7 +1062,63 @@ impl App {
                         || tab.editor.is_some();
 
                     ui.add_enabled_ui(tab.connected && !modal, |ui| {
-                        let action = tab.terminal.ui(ui, self.settings.font_size);
+                        ui.horizontal(|ui| {
+                            let mut profile_id = tab.terminal.profile().id.clone();
+                            egui::ComboBox::from_id_salt((tab.id, "terminal-profile"))
+                                .selected_text(&tab.terminal.profile().name)
+                                .show_ui(ui, |ui| {
+                                    for profile in &self.settings.terminal_profiles {
+                                        ui.selectable_value(
+                                            &mut profile_id,
+                                            profile.id.clone(),
+                                            &profile.name,
+                                        );
+                                    }
+                                });
+                            if profile_id != tab.terminal.profile().id {
+                                tab.terminal.set_profile(
+                                    self.settings.terminal_profile(Some(&profile_id)).clone(),
+                                );
+                            }
+                            if ui.small_button("Save profile to host").clicked() {
+                                let mut host = tab.host.clone();
+                                host.terminal_profile = Some(profile_id);
+                                match self.store.save_host(&host) {
+                                    Ok(()) => {
+                                        tab.host = host.clone();
+                                        if let Some(saved) =
+                                            self.hosts.iter_mut().find(|h| h.id == host.id)
+                                        {
+                                            *saved = host;
+                                        }
+                                    }
+                                    Err(e) => tab.error = Some(e.to_string()),
+                                }
+                            }
+                        });
+                        let action = ui
+                            .push_id(tab.id, |ui| tab.terminal.show(ui, tab.sftp_available))
+                            .inner;
+                        if let Some(path) = action.reveal_path {
+                            tab.reveal_name = path.rsplit('/').next().map(str::to_owned);
+                            let directory = path
+                                .rsplit_once('/')
+                                .map(|(p, _)| if p.is_empty() { "/" } else { p })
+                                .unwrap_or("/")
+                                .to_owned();
+                            tab.follow_suspended = true;
+                            if tab
+                                .session
+                                .commands
+                                .try_send(Command::File(FileOperation::List(directory)))
+                                .is_err()
+                            {
+                                tab.error = Some("SFTP queue unavailable".into());
+                            }
+                        }
+                        if action.audio_bell {
+                            self.runtime.spawn_blocking(crate::bell::play);
+                        }
                         if let Some((cols, rows)) = action.resize {
                             let _ = tab.session.commands.try_send(Command::Resize(cols, rows));
                         }
@@ -1029,6 +1147,7 @@ impl App {
         self.file_editor_window(ctx);
         self.confirm_dialog(ctx);
         self.settings_dialog(ctx);
+        self.register_terminal_fonts(ctx);
         self.inspector(ctx);
 
         if let Some(notice) = self.notice.clone() {

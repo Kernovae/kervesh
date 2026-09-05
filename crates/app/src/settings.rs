@@ -15,11 +15,10 @@ impl App {
         let mut forget = None;
         egui::Window::new("Settings").open(&mut open).default_width(520.0).vscroll(true).show(ctx,|ui|{
             ui.heading("Appearance & behavior");ui.checkbox(&mut self.settings.dark,"Dark theme");
-            ui.add(egui::Slider::new(&mut self.settings.font_size,8.0..=32.0).text("Terminal font size"));
-            ui.add(egui::Slider::new(&mut self.settings.scrollback,0..=100000).logarithmic(true).text("Scrollback lines"));
+            self.terminal_settings(ui);
             ui.add(egui::Slider::new(&mut self.settings.monitor_secs,1..=300).text("Monitor interval (seconds)"));
             ui.checkbox(&mut self.settings.show_hidden,"Show hidden remote files");
-            ui.label(RichText::new("Scrollback and monitor interval apply to new sessions.").small().weak());
+            ui.label(RichText::new("Monitor interval applies to new sessions.").small().weak());
             ui.horizontal(|ui|{save=ui.button("Save settings").clicked();if ui.button("Restore defaults").clicked(){self.settings=Settings::default();}});
             ui.separator();
             ui.heading("Portable connections");
@@ -66,14 +65,26 @@ impl App {
             ui.separator();
             ui.heading("Keyboard");
             ui.label(
-                "Terminal: Ctrl+C sends interrupt · Ctrl+Shift+C copies selection · Ctrl+Shift+V pastes · Shift+PageUp/Down scrolls history · Shift+drag selects while remote mouse mode is active.",
+                "Desktop: Ctrl+C copies selection or interrupts; Ctrl+V pastes. Traditional: Ctrl+C/V send control bytes. Both: Ctrl+Shift+C/V copy/paste; Ctrl+F searches; Ctrl+Alt+letter sends literal control when enabled. Shift+PageUp/Down scrolls; Shift+drag overrides remote mouse mode.",
             );
             ui.label(RichText::new("Kervesh 0.1 · Native Rust workspace · No telemetry").small().weak());
         });
         self.settings_open = open;
         if save {
             match self.store.save_settings(&self.settings) {
-                Ok(()) => self.settings_open = false,
+                Ok(()) => {
+                    self.settings_open = false;
+                    for tab in &mut self.tabs {
+                        if let Some(profile) = self
+                            .settings
+                            .terminal_profiles
+                            .iter()
+                            .find(|p| p.id == tab.terminal.profile().id)
+                        {
+                            tab.terminal.set_profile(profile.clone());
+                        }
+                    }
+                }
                 Err(e) => self.notice = Some(e.to_string()),
             }
         }

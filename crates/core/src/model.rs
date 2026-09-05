@@ -13,6 +13,7 @@ pub enum AuthMethod {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Host {
+    pub terminal_profile: Option<String>,
     pub id: String,
     pub name: String,
     pub hostname: String,
@@ -33,6 +34,7 @@ impl Default for Host {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            terminal_profile: None,
             name: String::new(),
             hostname: String::new(),
             port: 22,
@@ -105,8 +107,10 @@ impl Host {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(from = "SettingsWire")]
 pub struct Settings {
+    pub terminal_profiles: Vec<crate::TerminalProfile>,
+    pub default_terminal_profile: String,
     pub dark: bool,
     pub font_size: f32,
     pub scrollback: usize,
@@ -118,6 +122,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            terminal_profiles: crate::TerminalProfile::builtins(),
+            default_terminal_profile: "default".into(),
             dark: true,
             font_size: 14.0,
             scrollback: 10000,
@@ -129,7 +135,31 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub fn terminal_profile(&self, id: Option<&str>) -> &crate::TerminalProfile {
+        self.terminal_profiles
+            .iter()
+            .find(|p| Some(p.id.as_str()) == id)
+            .or_else(|| {
+                self.terminal_profiles
+                    .iter()
+                    .find(|p| p.id == self.default_terminal_profile)
+            })
+            .unwrap_or(&self.terminal_profiles[0])
+    }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.terminal_profiles.is_empty() && self.terminal_profiles.len() <= 64,
+            "Require 1–64 terminal profiles"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for profile in &self.terminal_profiles {
+            profile.validate()?;
+            ensure!(ids.insert(&profile.id), "Duplicate terminal profile ID");
+        }
+        ensure!(
+            ids.contains(&self.default_terminal_profile),
+            "Default terminal profile missing"
+        );
         ensure!(
             self.font_size.is_finite() && (8.0..=32.0).contains(&self.font_size),
             "Font size must be 8–32"
@@ -143,5 +173,56 @@ impl Settings {
             "Monitor interval must be 1–300 seconds"
         );
         Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SettingsWire {
+    dark: bool,
+    font_size: f32,
+    scrollback: usize,
+    monitor_secs: u64,
+    show_hidden: bool,
+    sidebar: bool,
+    sftp_panel: bool,
+    terminal_profiles: Option<Vec<crate::TerminalProfile>>,
+    default_terminal_profile: String,
+}
+impl Default for SettingsWire {
+    fn default() -> Self {
+        let s = Settings::default();
+        Self {
+            dark: s.dark,
+            font_size: s.font_size,
+            scrollback: s.scrollback,
+            monitor_secs: s.monitor_secs,
+            show_hidden: s.show_hidden,
+            sidebar: s.sidebar,
+            sftp_panel: s.sftp_panel,
+            terminal_profiles: None,
+            default_terminal_profile: s.default_terminal_profile,
+        }
+    }
+}
+impl From<SettingsWire> for Settings {
+    fn from(s: SettingsWire) -> Self {
+        let terminal_profiles = s.terminal_profiles.unwrap_or_else(|| {
+            let mut profiles = crate::TerminalProfile::builtins();
+            profiles[0].font_size = s.font_size;
+            profiles[0].scrollback = s.scrollback;
+            profiles
+        });
+        Self {
+            dark: s.dark,
+            font_size: s.font_size,
+            scrollback: s.scrollback,
+            monitor_secs: s.monitor_secs,
+            show_hidden: s.show_hidden,
+            sidebar: s.sidebar,
+            sftp_panel: s.sftp_panel,
+            terminal_profiles,
+            default_terminal_profile: s.default_terminal_profile,
+        }
     }
 }

@@ -47,15 +47,26 @@ is unavailable, leave “Save” unchecked for session-only authentication.
 7. Inspect CPU, memory, swap, load, mounts, network and system metadata below the
    terminal. Inspector provides details; Pause stops polling for that session.
 
-Terminal shortcuts: Ctrl+C interrupts; Ctrl+X/Ctrl+V send terminal control keys;
-Ctrl+Shift+C copies selection; Ctrl+Shift+V pastes. Shift+PageUp/PageDown scrolls
-history. Shift+drag selects text when a remote program enables mouse reporting.
-Full-screen terminal applications use the Alacritty VT engine.
+Terminal defaults to Desktop clipboard behavior: Ctrl+C copies a selection or
+interrupts when nothing is selected; Ctrl+V pastes. Traditional mode preserves
+Ctrl+C/Ctrl+V control bytes. Both support Ctrl+Shift+C/V. Configurable
+Ctrl+Alt+letter sends literal control bytes. Multiline paste requires confirmation
+by default; bracketed paste remains supported.
 
-Settings control light/dark theme, font size, scrollback, monitor interval, hidden
-files, JSON import/export and trusted keys. Profiles support groups, tags,
-favorites, recent sorting, timeout, keepalive and optional reconnect after a
-previously successful connection drops.
+Shift+PageUp/PageDown scrolls history. Drag selects, double-click selects a word,
+and triple-click selects a logical line. Shift+drag overrides remote mouse mode.
+Ctrl+F searches local scrollback; Ctrl+Click deliberately opens HTTP/HTTPS or OSC 8
+links. Absolute paths offer “Reveal in SFTP” when SFTP is available.
+
+Settings → Terminal edits the global default profile, fonts/fallbacks, cursor,
+palette, scrollback, clipboard and behavior. Host forms choose a profile; active
+sessions can switch profiles without saving that choice to the host. Use “Save
+profile to host” explicitly. Terminal palettes are independent of the app theme.
+See [Terminal Foundation](docs/terminal-foundation.md) for details and limitations.
+
+Existing settings still control app theme, monitor interval, hidden files,
+JSON import/export and trusted keys. Host profiles retain groups, tags, favorites,
+timeout, keepalive and optional reconnect.
 
 ## Architecture
 

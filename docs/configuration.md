@@ -42,9 +42,50 @@ as account. Trusted endpoints key on case-normalized hostname plus port, with
 SHA-256 public-key fingerprints. Trust never imports or exports automatically.
 
 Timeout 1–300 seconds; keepalive 0–3600 seconds (0 disables); font 8–32 points;
-scrollback 0–100,000 lines; monitoring 1–300 seconds. Existing sessions retain
-initial scrollback/polling interval until reconnected. All metrics currently
+scrollback 0–100,000 lines; monitoring 1–300 seconds. Saving terminal profiles updates scrollback in sessions using those profiles.
+Existing sessions retain their initial monitoring interval until reconnected. All metrics currently
 share the configured interval. Configuration writes use SQLite transactions.
 
 Remote listing timestamps are Unix seconds. SFTP paths always use `/`, independent
 of the client operating system. New/renamed names must be one path component.
+
+## Terminal Foundation extension
+
+Settings now include `terminal_profiles` (1–64 profiles) and
+`default_terminal_profile` (an ID in that collection). Hosts optionally include
+`terminal_profile`; null/missing uses the global default. A missing host reference
+also falls back to the global default. Duplicate terminal IDs, missing defaults,
+invalid bounds and unknown fields are rejected. Profiles are stored in the existing
+SQLite settings JSON; no SQL schema migration is needed.
+
+Old JSON remains readable. When `terminal_profiles` is absent, legacy `font_size`
+and `scrollback` initialize the Default profile. These legacy fields remain in
+exports for compatibility, but the terminal profile controls current rendering.
+Older Kervesh versions reject the newly added fields; keep a pre-upgrade export
+if downgrading. No terminal contents or clipboard data are persisted.
+
+Each terminal profile contains:
+
+| Field | Values / bounds |
+|---|---|
+| `id`, `name` | Unique ID, 1–128 ASCII letters/digits/hyphen/underscore; nonempty name ≤128 bytes |
+| `font_family`, `font_fallbacks` | `Hack` or absolute local TTF/OTF path; up to eight ordered fallbacks |
+| `font_size`, `line_height`, `padding` | 8–32 points; 1–2 multiplier; 0–32 points |
+| `cursor_style`, `cursor_blink` | `Block`, `Beam`, `Underline`; boolean |
+| `scrollback` | 0–100000 lines |
+| `clipboard_profile` | `Desktop`, `Traditional` |
+| `copy_on_select`, `literal_control_keys` | Boolean; literal controls use Ctrl+Alt+letter |
+| `multiline_paste_policy` | `Off`, `Warn`, `AlwaysPreview` |
+| `palette` | `kind`, RGB `background`, `foreground`, `cursor`, `selection`, 16 RGB `ansi` entries |
+| `bell_visual`, `bell_audio`, `hyperlinks_enabled` | Boolean |
+| `follow_terminal_directory` | Boolean, default false |
+
+Palette kinds: `KerveshDark`, `KerveshLight`, `Custom`. RGB arrays are authoritative;
+the UI fills built-in values when selecting a built-in palette. ANSI indices
+16–255 use the standard color cube/grayscale. Remote true colors and OSC palette
+changes remain authoritative. App `dark` does not change terminal colors.
+
+Built-ins: Default, Server Administration, Development, Database, Minimal. All are
+editable. Changing the active session profile does not write host configuration;
+“Save profile to host” does. Saving Settings persists edited profiles and applies
+them to matching active sessions. Font paths are portable references, not font data.

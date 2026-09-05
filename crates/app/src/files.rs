@@ -52,6 +52,27 @@ impl App {
                 let id = tab.id;
                 let dark = self.settings.dark;
 
+                if tab.terminal.profile().follow_terminal_directory {
+                    if tab.follow_suspended {
+                        if ui
+                            .small_button("Resume following terminal directory")
+                            .clicked()
+                        {
+                            tab.follow_suspended = false;
+                            tab.last_followed = None;
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new(if tab.terminal.directory().is_some() {
+                                "Following terminal directory"
+                            } else {
+                                "Waiting for terminal directory metadata"
+                            })
+                            .small()
+                            .weak(),
+                        );
+                    }
+                }
                 // Tab Header: SFTP / File Browser / Bookmarks
                 ui.horizontal(|ui| {
                     let _ = ui.selectable_label(true, "SFTP");
@@ -457,6 +478,11 @@ impl App {
             });
 
         if let Some((id, operation)) = operation {
+            if matches!(operation, FileOperation::List(_))
+                && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
+            {
+                tab.follow_suspended = true;
+            }
             if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
                 tab.busy = true;
             }
