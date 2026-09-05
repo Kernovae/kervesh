@@ -37,13 +37,76 @@ impl App {
                         .hint_text("🔍 Search hosts, groups, tags...")
                         .desired_width(f32::INFINITY),
                 );
-                ui.add_space(8.0);
+
+                // Collect distinct tags from hosts and workspaces
+                let mut all_tags = Vec::new();
+                for h in &self.hosts {
+                    for t in h.tag_list() {
+                        let t_str = t.to_string();
+                        if !all_tags.contains(&t_str) {
+                            all_tags.push(t_str);
+                        }
+                    }
+                }
+                for w in &self.workspaces {
+                    for t in &w.tags {
+                        if !all_tags.contains(t) {
+                            all_tags.push(t.clone());
+                        }
+                    }
+                }
+                all_tags.sort();
+
+                if !all_tags.is_empty() {
+                    ui.add_space(3.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(active_tag) = &self.selected_tag_filter.clone() {
+                            if ui
+                                .button(
+                                    RichText::new(format!("#{active_tag} ✕"))
+                                        .color(Color32::from_rgb(250, 204, 21))
+                                        .size(11.0),
+                                )
+                                .clicked()
+                            {
+                                self.selected_tag_filter = None;
+                            }
+                        } else {
+                            for tag in all_tags.iter().take(6) {
+                                if ui
+                                    .button(
+                                        RichText::new(format!("#{tag}"))
+                                            .size(10.5)
+                                            .color(Color32::from_rgb(147, 197, 253)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_tag_filter = Some(tag.clone());
+                                }
+                            }
+                        }
+                    });
+                }
+                ui.add_space(6.0);
+
+                let tag_filter = self.selected_tag_filter.clone();
+                let host_matches_tag =
+                    |h: &kervesh_core::Host, ws: &[kervesh_core::SessionWorkspace]| {
+                        if let Some(tag) = &tag_filter {
+                            h.tags.contains(tag)
+                                || ws
+                                    .iter()
+                                    .any(|w| w.tags.contains(tag) && w.host_ids.contains(&h.id))
+                        } else {
+                            true
+                        }
+                    };
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut groups: Vec<_> = self
                         .hosts
                         .iter()
-                        .filter(|h| h.matches(&self.query))
+                        .filter(|h| h.matches(&self.query) && host_matches_tag(h, &self.workspaces))
                         .map(|h| h.group.clone())
                         .collect();
                     groups.sort();
@@ -53,7 +116,11 @@ impl App {
                         let group_hosts: Vec<_> = self
                             .hosts
                             .iter()
-                            .filter(|h| h.group == group && h.matches(&self.query))
+                            .filter(|h| {
+                                h.group == group
+                                    && h.matches(&self.query)
+                                    && host_matches_tag(h, &self.workspaces)
+                            })
                             .collect();
                         let count = group_hosts.len();
 
@@ -252,7 +319,7 @@ impl App {
                     self.refresh_hosts();
                 }
                 if let Some(host) = delete {
-                    self.confirmation = Some(Confirmation::DeleteHost(host));
+                    self.confirmation = Some(Confirmation::DeleteHost(Box::new(host)));
                 }
             });
     }
@@ -273,29 +340,161 @@ impl App {
                     .num_columns(2)
                     .spacing([16.0, 10.0])
                     .show(ui, |ui| {
-                        field(ui, "Name", &mut host.name);
-                        field(ui, "Hostname / IP", &mut host.hostname);
-                        ui.label("Port");
-                        ui.add(egui::DragValue::new(&mut host.port).range(1..=65535));
-                        ui.end_row();
-                        field(ui, "Username", &mut host.username);
-                        ui.label("Authentication");
-                        egui::ComboBox::from_id_salt("auth")
-                            .selected_text(auth_label(&host.auth))
+                        ui.label("Protocol");
+                        egui::ComboBox::from_id_salt("host_protocol_select")
+                            .selected_text(host.protocol.label())
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut host.auth,
-                                    AuthMethod::Password,
-                                    "Password",
-                                );
-                                ui.selectable_value(
-                                    &mut host.auth,
-                                    AuthMethod::PrivateKey,
-                                    "Private key",
-                                );
-                                ui.selectable_value(&mut host.auth, AuthMethod::Agent, "SSH agent");
+                                if ui
+                                    .selectable_value(
+                                        &mut host.protocol,
+                                        kervesh_core::ProtocolKind::SSH,
+                                        "SSH",
+                                    )
+                                    .clicked()
+                                    && (host.port == 23
+                                        || host.port == 21
+                                        || host.port == 3389
+                                        || host.port == 5900)
+                                {
+                                    host.port = 22;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut host.protocol,
+                                        kervesh_core::ProtocolKind::Telnet,
+                                        "Telnet",
+                                    )
+                                    .clicked()
+                                    && host.port == 22
+                                {
+                                    host.port = 23;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut host.protocol,
+                                        kervesh_core::ProtocolKind::Serial,
+                                        "Serial Port (UART)",
+                                    )
+                                    .clicked()
+                                    && host.serial_config.is_none()
+                                {
+                                    host.serial_config =
+                                        Some(kervesh_core::SerialConfig::default());
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut host.protocol,
+                                        kervesh_core::ProtocolKind::FTP,
+                                        "FTP / FTPS",
+                                    )
+                                    .clicked()
+                                    && host.port == 22
+                                {
+                                    host.port = 21;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut host.protocol,
+                                        kervesh_core::ProtocolKind::RDP,
+                                        "RDP (Remote Desktop)",
+                                    )
+                                    .clicked()
+                                    && host.port == 22
+                                {
+                                    host.port = 3389;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut host.protocol,
+                                        kervesh_core::ProtocolKind::VNC,
+                                        "VNC Remote Desktop",
+                                    )
+                                    .clicked()
+                                    && host.port == 22
+                                {
+                                    host.port = 5900;
+                                }
                             });
                         ui.end_row();
+
+                        field(ui, "Name", &mut host.name);
+
+                        if host.protocol == kervesh_core::ProtocolKind::Serial {
+                            let serial_cfg = host
+                                .serial_config
+                                .get_or_insert_with(kervesh_core::SerialConfig::default);
+                            ui.label("Serial Port");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut serial_cfg.port)
+                                        .desired_width(180.0),
+                                );
+                                egui::ComboBox::from_id_salt("serial_port_discover")
+                                    .selected_text("Scan ports…")
+                                    .show_ui(ui, |ui| {
+                                        for p in kervesh_ssh::list_available_serial_ports() {
+                                            let label = match p.description {
+                                                Some(desc) => format!("{} ({})", p.port_name, desc),
+                                                None => p.port_name.clone(),
+                                            };
+                                            if ui
+                                                .selectable_label(
+                                                    serial_cfg.port == p.port_name,
+                                                    label,
+                                                )
+                                                .clicked()
+                                            {
+                                                serial_cfg.port = p.port_name;
+                                            }
+                                        }
+                                    });
+                            });
+                            ui.end_row();
+
+                            ui.label("Baud Rate");
+                            egui::ComboBox::from_id_salt("serial_baud_select")
+                                .selected_text(serial_cfg.baud_rate.to_string())
+                                .show_ui(ui, |ui| {
+                                    for baud in [9600, 19200, 38400, 57600, 115200, 230400] {
+                                        ui.selectable_value(
+                                            &mut serial_cfg.baud_rate,
+                                            baud,
+                                            baud.to_string(),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                        } else {
+                            field(ui, "Hostname / IP", &mut host.hostname);
+                            ui.label("Port");
+                            ui.add(egui::DragValue::new(&mut host.port).range(1..=65535));
+                            ui.end_row();
+                            field(ui, "Username", &mut host.username);
+                        }
+
+                        if host.protocol == kervesh_core::ProtocolKind::SSH {
+                            ui.label("Authentication");
+                            egui::ComboBox::from_id_salt("auth")
+                                .selected_text(auth_label(&host.auth))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut host.auth,
+                                        AuthMethod::Password,
+                                        "Password",
+                                    );
+                                    ui.selectable_value(
+                                        &mut host.auth,
+                                        AuthMethod::PrivateKey,
+                                        "Private key",
+                                    );
+                                    ui.selectable_value(
+                                        &mut host.auth,
+                                        AuthMethod::Agent,
+                                        "SSH agent",
+                                    );
+                                });
+                            ui.end_row();
+                        }
                         if host.auth == AuthMethod::PrivateKey {
                             ui.label("Private key");
                             ui.horizontal(|ui| {
@@ -331,6 +530,39 @@ impl App {
                                 }
                             });
                         ui.end_row();
+                        ui.label("Jump Host (Bastion)");
+                        let current_jump_label = host
+                            .jump_host
+                            .as_ref()
+                            .and_then(|jid| {
+                                self.hosts
+                                    .iter()
+                                    .find(|h| &h.id == jid)
+                                    .map(|h| h.name.as_str())
+                            })
+                            .unwrap_or("Direct connection (None)");
+                        egui::ComboBox::from_id_salt("host-jump-host")
+                            .selected_text(current_jump_label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut host.jump_host,
+                                    None,
+                                    "Direct connection (None)",
+                                );
+                                for other_host in &self.hosts {
+                                    if other_host.id != host.id {
+                                        ui.selectable_value(
+                                            &mut host.jump_host,
+                                            Some(other_host.id.clone()),
+                                            format!(
+                                                "{} ({})",
+                                                other_host.name, other_host.hostname
+                                            ),
+                                        );
+                                    }
+                                }
+                            });
+                        ui.end_row();
                         field(ui, "Group", &mut host.group);
                         field(ui, "Tags", &mut host.tags);
                         ui.label("Timeout (seconds)");
@@ -346,6 +578,34 @@ impl App {
                                 &mut host.auto_reconnect,
                                 "Reconnect after connection loss",
                             );
+                            if host.protocol == kervesh_core::ProtocolKind::SSH {
+                                ui.checkbox(&mut host.forward_agent, "Forward SSH agent");
+                                let mut x11_enabled = host.x11.as_ref().is_some_and(|x| x.enabled);
+                                if ui
+                                    .checkbox(&mut x11_enabled, "Forward X11 display (GUI apps)")
+                                    .changed()
+                                {
+                                    if x11_enabled {
+                                        let mut cfg = host.x11.take().unwrap_or_default();
+                                        cfg.enabled = true;
+                                        host.x11 = Some(cfg);
+                                    } else if let Some(cfg) = &mut host.x11 {
+                                        cfg.enabled = false;
+                                    }
+                                }
+                                if let Some(x11) = &mut host.x11
+                                    && x11.enabled
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("DISPLAY:").small());
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut x11.display)
+                                                .desired_width(100.0),
+                                        );
+                                        ui.checkbox(&mut x11.trusted, "Trusted (-Y)");
+                                    });
+                                }
+                            }
                         });
                         ui.end_row();
                     });

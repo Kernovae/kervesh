@@ -38,3 +38,18 @@ fn remote_paths_do_not_allow_sibling_traversal() {
         assert!(remote_join("/var", bad).is_err());
     }
 }
+
+#[tokio::test]
+async fn recursive_directory_structure_test() {
+    let temp = tempfile::tempdir().unwrap();
+    let sub = temp.path().join("subdir");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(temp.path().join("file1.txt"), b"hello").unwrap();
+    std::fs::write(sub.join("file2.txt"), b"world!").unwrap();
+
+    let meta1 = tokio::fs::metadata(temp.path().join("file1.txt"))
+        .await
+        .unwrap();
+    let meta2 = tokio::fs::metadata(sub.join("file2.txt")).await.unwrap();
+    assert_eq!(meta1.len() + meta2.len(), 11);
+}

@@ -13,16 +13,58 @@ impl App {
         let mut import = false;
         let mut import_ssh = false;
         let mut forget = None;
-        egui::Window::new("Settings").open(&mut open).default_width(520.0).vscroll(true).show(ctx,|ui|{
+        egui::Window::new("Settings").open(&mut open).default_width(560.0).vscroll(true).show(ctx,|ui|{
             ui.heading("Appearance & behavior");ui.checkbox(&mut self.settings.dark,"Dark theme");
             self.terminal_settings(ui);
-            ui.add(egui::Slider::new(&mut self.settings.monitor_secs,1..=300).text("Monitor interval (seconds)"));
             ui.checkbox(&mut self.settings.show_hidden,"Show hidden remote files");
-            ui.label(RichText::new("Monitor interval applies to new sessions.").small().weak());
-            ui.horizontal(|ui|{save=ui.button("Save settings").clicked();if ui.button("Restore defaults").clicked(){self.settings=Settings::default();}});
+
+            ui.separator();
+            ui.heading("Metric Polling Cadences");
+            egui::Grid::new("metric_cadences").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                ui.label("Overall monitor (secs)");
+                ui.add(egui::Slider::new(&mut self.settings.monitor_secs, 1..=300));
+                ui.end_row();
+
+                ui.label("CPU metrics (secs)");
+                ui.add(egui::Slider::new(&mut self.settings.cpu_interval_secs, 1..=300));
+                ui.end_row();
+
+                ui.label("Memory metrics (secs)");
+                ui.add(egui::Slider::new(&mut self.settings.memory_interval_secs, 1..=300));
+                ui.end_row();
+
+                ui.label("Disk metrics (secs)");
+                ui.add(egui::Slider::new(&mut self.settings.disk_interval_secs, 1..=300));
+                ui.end_row();
+
+                ui.label("Network metrics (secs)");
+                ui.add(egui::Slider::new(&mut self.settings.network_interval_secs, 1..=300));
+                ui.end_row();
+            });
+
+            ui.separator();
+            ui.heading("Key Bindings & Shortcuts");
+            egui::Grid::new("keybindings_grid").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label(RichText::new("Action").strong());
+                ui.label(RichText::new("Shortcut").strong());
+                ui.label(RichText::new("Reset").strong());
+                ui.end_row();
+
+                for binding in &mut self.settings.keybindings.bindings {
+                    ui.label(binding.action.description());
+                    ui.add(egui::TextEdit::singleline(&mut binding.shortcut).desired_width(120.0));
+                    if ui.small_button("Default").clicked() {
+                        binding.shortcut = binding.action.default_shortcut().to_string();
+                    }
+                    ui.end_row();
+                }
+            });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui|{save=ui.button("💾 Save settings").clicked();if ui.button("Restore defaults").clicked(){self.settings=Settings::default();}});
             ui.separator();
             ui.heading("Portable connections");
-            ui.label("Versioned JSON export includes hosts and preferences. Passwords, passphrases, trusted fingerprints and recent history are excluded.");
+            ui.label("Versioned JSON export includes hosts, snippets, and preferences. Passwords, passphrases, trusted fingerprints and recent history are excluded.");
             ui.horizontal(|ui| {
                 export = ui.button("Export JSON…").clicked();
                 import = ui.button("Import JSON…").clicked();
@@ -63,11 +105,11 @@ impl App {
                 }
             }
             ui.separator();
-            ui.heading("Keyboard");
+            ui.heading("Keyboard info");
             ui.label(
                 "Desktop: Ctrl+C copies selection or interrupts; Ctrl+V pastes. Traditional: Ctrl+C/V send control bytes. Both: Ctrl+Shift+C/V copy/paste; Ctrl+F searches; Ctrl+Alt+letter sends literal control when enabled. Shift+PageUp/Down scrolls; Shift+drag overrides remote mouse mode.",
             );
-            ui.label(RichText::new("Kervesh 0.1 · Native Rust workspace · No telemetry").small().weak());
+            ui.label(RichText::new("Kervesh 0.3 · Native Rust workspace · Power-user workflows").small().weak());
         });
         self.settings_open = open;
         if save {
@@ -133,18 +175,37 @@ impl App {
             }
         }
         if import_ssh && let Some(path) = rfd::FileDialog::new().pick_file() {
-            let result = (|| -> anyhow::Result<usize> {
+            let result = (|| -> anyhow::Result<kervesh_core::ssh_config::OpenSshImportReport> {
                 anyhow::ensure!(
                     std::fs::metadata(&path)?.len() <= 10 * 1024 * 1024,
                     "File exceeds 10 MB"
                 );
                 let content = std::fs::read_to_string(path)?;
-                self.store.import_ssh_config(&content)
+                self.store.import_ssh_config_with_report(&content)
             })();
             match result {
-                Ok(count) => {
+                Ok(report) => {
                     self.refresh_hosts();
-                    self.notice = Some(format!("Imported {count} hosts from SSH config."));
+                    let mut msg = format!("Imported {} hosts from SSH config.", report.hosts.len());
+                    if report.proxy_jump_count > 0 {
+                        msg.push_str(&format!(
+                            " ({} ProxyJumps detected)",
+                            report.proxy_jump_count
+                        ));
+                    }
+                    if report.forwarded_rules_count > 0 {
+                        msg.push_str(&format!(
+                            " ({} port forwards preserved)",
+                            report.forwarded_rules_count
+                        ));
+                    }
+                    if !report.unsupported_directives.is_empty() {
+                        msg.push_str(&format!(
+                            " [Ignored {} unsupported directives]",
+                            report.unsupported_directives.len()
+                        ));
+                    }
+                    self.notice = Some(msg);
                 }
                 Err(e) => {
                     self.notice = Some(format!("Import failed: {e}"));

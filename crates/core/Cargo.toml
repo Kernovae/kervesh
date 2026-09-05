@@ -11,6 +11,11 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+chrono.workspace = true
+regex.workspace = true
+ring.workspace = true
+ssh-key.workspace = true
+rand_core.workspace = true
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 directories = "6"
 

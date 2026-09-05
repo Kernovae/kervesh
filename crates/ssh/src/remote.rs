@@ -74,6 +74,54 @@ impl Remote {
     ) -> Result<Self> {
         host.validate()?;
         let duration = Duration::from_secs(host.timeout_secs);
+        let config = Arc::new(client::Config {
+            keepalive_interval: (host.keepalive_secs > 0)
+                .then(|| Duration::from_secs(host.keepalive_secs)),
+            keepalive_max: 3,
+            ..Default::default()
+        });
+        let handler = Handler {
+            host: host.clone(),
+            store: store.clone(),
+            events: events.clone(),
+        };
+
+        if let Some(jump_id) = &host.jump_host
+            && let Ok(Some(jump_host)) = store.get_host(jump_id)
+        {
+            let jump_secret = tokio::task::spawn_blocking({
+                let jid = jump_host.id.clone();
+                move || secrets::load(&jid).ok().flatten().unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+            let jump_creds = Credentials {
+                secret: jump_secret,
+                remember: false,
+            };
+            let jump_remote = Box::pin(Self::connect(
+                &jump_host,
+                &jump_creds,
+                store.clone(),
+                events.clone(),
+            ))
+            .await
+            .context("Failed connecting to Bastion/Jump Host")?;
+            let channel = jump_remote
+                .handle
+                .channel_open_direct_tcpip(&host.hostname, host.port as u32, "127.0.0.1", 0)
+                .await
+                .context("Bastion failed to open direct TCP/IP channel to target")?;
+            let stream = channel.into_stream();
+            let handle = timeout(
+                Duration::from_secs(135),
+                client::connect_stream(config, stream, handler),
+            )
+            .await
+            .context("SSH handshake through Bastion timed out")??;
+            return Self::finish_auth(handle, host, credentials, store, events, duration).await;
+        }
+
         let socket = timeout(
             duration,
             TcpStream::connect((host.hostname.as_str(), host.port)),
@@ -81,23 +129,25 @@ impl Remote {
         .await
         .context("Connection timed out")??;
         socket.set_nodelay(true)?;
-        let config = client::Config {
-            keepalive_interval: (host.keepalive_secs > 0)
-                .then(|| Duration::from_secs(host.keepalive_secs)),
-            keepalive_max: 3,
-            ..Default::default()
-        };
-        let handler = Handler {
-            host: host.clone(),
-            store: store.clone(),
-            events: events.clone(),
-        };
-        let mut handle = timeout(
+
+        let handle = timeout(
             Duration::from_secs(135),
-            client::connect_stream(Arc::new(config), socket, handler),
+            client::connect_stream(config, socket, handler),
         )
         .await
         .context("SSH handshake timed out")??;
+
+        Self::finish_auth(handle, host, credentials, store, events, duration).await
+    }
+
+    async fn finish_auth(
+        mut handle: client::Handle<Handler>,
+        host: &Host,
+        credentials: &Credentials,
+        store: Store,
+        events: EventSink,
+        duration: Duration,
+    ) -> Result<Self> {
         let auth = async {
             match host.auth {
                 AuthMethod::Password => Ok(handle
@@ -234,6 +284,30 @@ impl Remote {
             .disconnect(Disconnect::ByApplication, "Session closed", "en")
             .await?;
         Ok(())
+    }
+    pub async fn open_direct_tcpip(
+        &self,
+        host: &str,
+        port: u32,
+        orig_host: &str,
+        orig_port: u32,
+    ) -> Result<Channel<client::Msg>> {
+        self.handle
+            .channel_open_direct_tcpip(host, port, orig_host, orig_port)
+            .await
+            .map_err(Into::into)
+    }
+    pub async fn tcpip_forward(&self, address: &str, port: u32) -> Result<u32> {
+        self.handle
+            .tcpip_forward(address, port)
+            .await
+            .map_err(Into::into)
+    }
+    pub async fn cancel_tcpip_forward(&self, address: &str, port: u32) -> Result<()> {
+        self.handle
+            .cancel_tcpip_forward(address, port)
+            .await
+            .map_err(Into::into)
     }
 }
 async fn expect_success(channel: &mut Channel<client::Msg>) -> Result<()> {

@@ -9,7 +9,7 @@ use kervesh_ssh::{
 };
 use kervesh_terminal::{Terminal, TerminalFontConfig, TerminalFontManager};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Arc, mpsc as std_mpsc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -20,11 +20,22 @@ use crate::icons::{
 };
 use crate::theme::colors;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SplitMode {
+    None,
+    Vertical,
+    Horizontal,
+}
+
 pub(crate) struct Tab {
     pub id: u64,
     pub host: Host,
     pub session: Session,
     pub terminal: Terminal,
+    pub split_mode: SplitMode,
+    pub split_ratio: f32,
+    pub secondary_terminal: Option<Terminal>,
+    pub active_pane: usize,
     pub connected: bool,
     pub sftp_available: bool,
     pub follow_suspended: bool,
@@ -47,21 +58,15 @@ pub(crate) struct Tab {
     pub paused: bool,
     pub error: Option<String>,
     pub transfers: Vec<TransferRow>,
-    pub editor: Option<EditorState>,
+    pub editor: Option<crate::editor::RemoteEditor>,
     pub connected_at: Option<String>,
+    pub alerts: Vec<kervesh_core::MonitorAlert>,
     pub cpu_history: Vec<f32>,
     pub mem_history: Vec<f32>,
     pub net_rx_history: Vec<f32>,
     pub net_tx_history: Vec<f32>,
-}
-
-pub(crate) struct EditorState {
-    pub path: String,
-    pub name: String,
-    pub content: String,
-    pub dirty: bool,
-    pub saving: bool,
-    pub error: Option<String>,
+    pub recorder: Option<kervesh_core::SessionRecorder>,
+    pub cmd_buffer: String,
 }
 
 pub(crate) struct TransferRow {
@@ -86,7 +91,7 @@ pub(crate) struct TrustPrompt {
 }
 
 pub(crate) enum Confirmation {
-    DeleteHost(Host),
+    DeleteHost(Box<Host>),
     CloseTab(u64),
     File(u64, FileOperation),
     Transfer(u64, TransferRequest),
@@ -166,12 +171,39 @@ pub struct App {
     theme: Option<bool>,
     pub(crate) terminal_fonts: TerminalFontManager,
     pub(crate) allow_quit: bool,
+    pub(crate) process_view: crate::process_view::ProcessViewState,
+    pub(crate) snippets_ui: crate::snippets_ui::SnippetsUiState,
+    pub(crate) tunnels: Vec<kervesh_core::TunnelConfig>,
+    pub(crate) tunnels_ui: crate::tunnels::TunnelsUi,
+    pub(crate) tunnels_open: bool,
+    pub(crate) active_tunnels: HashMap<String, kervesh_ssh::ActiveTunnel>,
+    pub(crate) workspaces: Vec<kervesh_core::SessionWorkspace>,
+    pub(crate) workspaces_ui: crate::workspaces_ui::WorkspacesUi,
+    pub(crate) workspaces_open: bool,
+    pub(crate) macros: Vec<kervesh_core::AutomationMacro>,
+    pub(crate) automation_ui: crate::automation_ui::AutomationUi,
+    pub(crate) automation_open: bool,
+    pub(crate) search_ui: crate::search_ui::SearchUiState,
+    pub(crate) sync_ui: crate::sync_ui::SyncUiState,
+    pub(crate) devops_ui: crate::devops_ui::DevOpsUiState,
+    pub(crate) audit_ui: crate::audit_ui::AuditUi,
+    pub(crate) triggers_ui: crate::triggers_ui::TriggersUi,
+    pub(crate) vault_ui: crate::vault_ui::VaultUi,
+    pub(crate) theme_ui: crate::theme_ui::ThemeUi,
+    pub(crate) trigger_engine: kervesh_core::TriggerEngine,
+    pub(crate) trigger_rules: Vec<kervesh_core::TriggerRule>,
+    pub(crate) selected_tag_filter: Option<String>,
 }
 
 impl App {
     pub fn new(store: Store, runtime: tokio::runtime::Runtime) -> Result<Self> {
         let settings = store.settings()?;
         let hosts = store.hosts()?;
+        let tunnels = store.tunnels().unwrap_or_default();
+        let workspaces = store.workspaces().unwrap_or_default();
+        let macros = store.macros().unwrap_or_default();
+        let trigger_rules = store.triggers().unwrap_or_default();
+        let trigger_engine = kervesh_core::TriggerEngine::new(&trigger_rules);
         let (secret_tx, secret_rx) = std_mpsc::channel();
         Ok(Self {
             store,
@@ -200,6 +232,28 @@ impl App {
             theme: None,
             terminal_fonts: TerminalFontManager::default(),
             allow_quit: false,
+            process_view: crate::process_view::ProcessViewState::default(),
+            snippets_ui: crate::snippets_ui::SnippetsUiState::default(),
+            tunnels,
+            tunnels_ui: crate::tunnels::TunnelsUi::default(),
+            tunnels_open: false,
+            active_tunnels: HashMap::new(),
+            workspaces,
+            workspaces_ui: crate::workspaces_ui::WorkspacesUi::default(),
+            workspaces_open: false,
+            macros,
+            automation_ui: crate::automation_ui::AutomationUi::default(),
+            automation_open: false,
+            search_ui: crate::search_ui::SearchUiState::default(),
+            sync_ui: crate::sync_ui::SyncUiState::default(),
+            devops_ui: crate::devops_ui::DevOpsUiState::default(),
+            audit_ui: crate::audit_ui::AuditUi::default(),
+            triggers_ui: crate::triggers_ui::TriggersUi::default(),
+            vault_ui: crate::vault_ui::VaultUi::default(),
+            theme_ui: crate::theme_ui::ThemeUi::default(),
+            trigger_engine,
+            trigger_rules,
+            selected_tag_filter: None,
         })
     }
 
@@ -231,6 +285,79 @@ impl App {
         match self.store.hosts() {
             Ok(hosts) => self.hosts = hosts,
             Err(e) => self.notice = Some(e.to_string()),
+        }
+        self.refresh_tunnels();
+        self.refresh_workspaces();
+        self.refresh_macros();
+    }
+
+    pub(crate) fn refresh_tunnels(&mut self) {
+        match self.store.tunnels() {
+            Ok(tunnels) => self.tunnels = tunnels,
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    pub(crate) fn refresh_workspaces(&mut self) {
+        match self.store.workspaces() {
+            Ok(ws) => self.workspaces = ws,
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    pub(crate) fn refresh_macros(&mut self) {
+        match self.store.macros() {
+            Ok(macros) => self.macros = macros,
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    pub(crate) fn start_tunnel(&mut self, config: kervesh_core::TunnelConfig) {
+        if config.kind != kervesh_core::TunnelKind::Remote
+            && crate::tunnels::is_port_in_use(&config.bind_addr, config.bind_port)
+        {
+            self.tunnels_ui.error_message = Some(format!(
+                "Port {} is already in use on {}",
+                config.bind_port, config.bind_addr
+            ));
+            return;
+        }
+
+        let host = match self.hosts.iter().find(|h| h.id == config.host_id).cloned() {
+            Some(h) => h,
+            None => {
+                self.tunnels_ui.error_message = Some("Host profile not found".into());
+                return;
+            }
+        };
+
+        let secret = secrets::load(&host.id).ok().flatten().unwrap_or_default();
+        let credentials = Credentials {
+            secret,
+            remember: false,
+        };
+
+        let store = self.store.clone();
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        let sink = kervesh_ssh::EventSink::new(tx, Arc::new(|| {}));
+        let tid = config.id.clone();
+        let cfg = config.clone();
+
+        match self.runtime.block_on(async {
+            kervesh_ssh::ActiveTunnel::start_for_host(&host, &credentials, store, sink, cfg).await
+        }) {
+            Ok(active) => {
+                self.active_tunnels.insert(tid, active);
+            }
+            Err(e) => {
+                self.tunnels_ui.error_message = Some(format!("Failed starting tunnel: {e:#}"));
+            }
+        }
+    }
+
+    pub(crate) fn stop_tunnel(&mut self, id: &str) {
+        if let Some(tunnel) = self.active_tunnels.remove(id) {
+            tunnel.stop();
         }
     }
 
@@ -273,6 +400,10 @@ impl App {
             host: login.host,
             session,
             terminal: Terminal::with_profile(100, 30, profile),
+            split_mode: SplitMode::None,
+            split_ratio: 0.5,
+            secondary_terminal: None,
+            active_pane: 0,
             connected: false,
             sftp_available: false,
             follow_suspended: false,
@@ -297,10 +428,13 @@ impl App {
             transfers: Vec::new(),
             editor: None,
             connected_at: None,
+            alerts: Vec::new(),
             cpu_history: Vec::new(),
             mem_history: Vec::new(),
             net_rx_history: Vec::new(),
             net_tx_history: Vec::new(),
+            recorder: None,
+            cmd_buffer: String::new(),
         });
         self.active = self.tabs.len() - 1;
     }
@@ -328,6 +462,7 @@ impl App {
             }
         }
         let mut reload = false;
+        let mut auto_start_tunnels = Vec::new();
         for tab in &mut self.tabs {
             for _ in 0..128 {
                 let Ok(event) = tab.session.events.try_recv() else {
@@ -353,9 +488,54 @@ impl App {
                         tab.retries = 0;
                         tab.connected_at = Some(format_current_time());
                         reload = true;
+                        for tunnel in &self.tunnels {
+                            if tunnel.auto_start
+                                && tunnel.host_id == tab.host.id
+                                && !self.active_tunnels.contains_key(&tunnel.id)
+                            {
+                                auto_start_tunnels.push(tunnel.clone());
+                            }
+                        }
+                        for mac in &self.macros {
+                            if mac.run_on_connect
+                                && (mac.host_id.as_deref() == Some(&tab.host.id)
+                                    || mac.host_id.is_none())
+                            {
+                                let _ = tab
+                                    .session
+                                    .commands
+                                    .try_send(Command::RunMacro(mac.clone()));
+                            }
+                        }
                     }
                     Event::Output(bytes) => {
+                        if let Some(rec) = &mut tab.recorder {
+                            let _ = rec.write_output(&bytes);
+                        }
+                        let text = String::from_utf8_lossy(&bytes);
+                        let trigger_actions =
+                            self.trigger_engine.evaluate(&text, Some(&tab.host.id));
+                        for act in trigger_actions {
+                            match act {
+                                kervesh_core::TriggerAction::Notification(msg) => {
+                                    self.notice = Some(msg);
+                                }
+                                kervesh_core::TriggerAction::SendInput(inp) => {
+                                    let _ = tab
+                                        .session
+                                        .commands
+                                        .try_send(Command::Input(inp.into_bytes()));
+                                }
+                                kervesh_core::TriggerAction::Highlight(_) => {}
+                                kervesh_core::TriggerAction::PlayBeep => {
+                                    self.runtime.spawn_blocking(crate::bell::play);
+                                }
+                            }
+                        }
                         tab.terminal.feed(&bytes);
+                        if let Some(sec) = &mut tab.secondary_terminal {
+                            sec.feed(&bytes);
+                        }
                         let replies = tab.terminal.replies();
                         if !replies.is_empty() {
                             let _ = tab.session.commands.try_send(Command::Input(replies));
@@ -387,7 +567,6 @@ impl App {
                             editor.error = Some(error.clone());
                         }
                         tab.error = Some(error);
-                        tab.busy = false;
                     }
                     Event::Capabilities(capabilities) => tab.capabilities = Some(capabilities),
                     Event::Metrics(snapshot, rates) => {
@@ -418,6 +597,11 @@ impl App {
                         if tab.net_tx_history.len() > 30 {
                             tab.net_tx_history.remove(0);
                         }
+                        let thresholds = tab
+                            .host
+                            .thresholds
+                            .unwrap_or(self.settings.default_thresholds);
+                        tab.alerts = snapshot.check_alerts(&rates, &thresholds);
                         tab.snapshot = Some(snapshot);
                         tab.rates = rates;
                     }
@@ -433,15 +617,60 @@ impl App {
                         tab.busy = false;
                     }
                     Event::FileContent { path, content } => {
-                        tab.editor = Some(EditorState {
-                            name: path.rsplit('/').next().unwrap_or(&path).to_string(),
-                            path,
-                            content,
-                            dirty: false,
-                            saving: false,
-                            error: None,
-                        });
+                        tab.editor = Some(crate::editor::RemoteEditor::new(path, content));
                         tab.busy = false;
+                    }
+                    Event::Processes(processes) => {
+                        self.process_view.processes = processes;
+                        self.process_view.loading = false;
+                    }
+                    Event::ProcessSignalled {
+                        pid,
+                        signal,
+                        success,
+                        error,
+                    } => {
+                        if success {
+                            self.notice =
+                                Some(format!("Signal {} sent to PID {}", signal.as_str(), pid));
+                            let _ = tab.session.commands.try_send(Command::ProcessList);
+                        } else if let Some(err) = error {
+                            self.notice = Some(format!("Failed to signal PID {}: {}", pid, err));
+                        }
+                    }
+                    Event::MacroStatus { done, error, .. } => {
+                        if let Some(err) = error {
+                            self.notice = Some(format!("Macro sequence error: {err}"));
+                        } else if done {
+                            self.notice = Some("Automation macro completed successfully".into());
+                        }
+                    }
+                    Event::SearchResults(results) => {
+                        self.search_ui.set_results(results);
+                    }
+                    Event::SyncPlanReady(plan) => {
+                        self.sync_ui.set_plan(plan);
+                    }
+                    Event::DockerContainers(c) => {
+                        self.devops_ui.containers = c;
+                    }
+                    Event::DockerImages(img) => {
+                        self.devops_ui.images = img;
+                    }
+                    Event::DockerLogs { id, logs } => {
+                        self.devops_ui.docker_logs_id = Some(id);
+                        self.devops_ui.docker_logs = Some(logs);
+                    }
+                    Event::SystemdUnits(u) => {
+                        self.devops_ui.units = u;
+                    }
+                    Event::SystemdLogs { unit, logs } => {
+                        self.devops_ui.systemd_logs_unit = Some(unit);
+                        self.devops_ui.systemd_logs = Some(logs);
+                    }
+                    Event::NetDiagResult(res) => {
+                        self.devops_ui.diag_running = false;
+                        self.devops_ui.diag_results.push(res);
                     }
                     Event::OperationComplete => {
                         if let Some(editor) = &mut tab.editor
@@ -449,6 +678,7 @@ impl App {
                         {
                             editor.saving = false;
                             editor.dirty = false;
+                            editor.original_content = editor.content.clone();
                         }
                         let _ = tab
                             .session
@@ -523,6 +753,9 @@ impl App {
                 }
             }
         }
+        for tunnel in auto_start_tunnels {
+            self.start_tunnel(tunnel);
+        }
         self.trust.retain(|prompt| {
             self.tabs.iter().any(|t| t.id == prompt.tab) && !prompt.reply.is_closed()
         });
@@ -571,6 +804,168 @@ impl App {
                 style.spacing.button_padding = egui::vec2(8.0, 4.0);
             });
             self.theme = Some(dark);
+        }
+
+        // Global Keybindings Dispatcher
+        let is_modal_open = self.host_form.is_some()
+            || self.login.is_some()
+            || !self.trust.is_empty()
+            || self.confirmation.is_some()
+            || self.file_dialog.is_some()
+            || self.settings_open
+            || self.inspector_open
+            || self.process_view.open
+            || self.snippets_ui.manager_open
+            || self.snippets_ui.run_dialog.is_some()
+            || self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| t.editor.is_some());
+
+        if !is_modal_open {
+            let key_match = |shortcut: &str| -> bool {
+                let parts: Vec<&str> = shortcut.split('+').collect();
+                let mut ctrl = false;
+                let mut alt = false;
+                let mut shift = false;
+                let mut key = None;
+                for p in parts {
+                    let clean = p.trim().to_lowercase();
+                    if clean == "ctrl" || clean == "cmd" || clean == "command" {
+                        ctrl = true;
+                    } else if clean == "alt" || clean == "opt" || clean == "option" {
+                        alt = true;
+                    } else if clean == "shift" {
+                        shift = true;
+                    } else if clean == "d" {
+                        key = Some(egui::Key::D);
+                    } else if clean == "e" {
+                        key = Some(egui::Key::E);
+                    } else if clean == "w" {
+                        key = Some(egui::Key::W);
+                    } else if clean == "p" {
+                        key = Some(egui::Key::P);
+                    } else if clean == "k" {
+                        key = Some(egui::Key::K);
+                    } else if clean == "b" {
+                        key = Some(egui::Key::B);
+                    } else if clean == "f" {
+                        key = Some(egui::Key::F);
+                    } else if clean == "t" {
+                        key = Some(egui::Key::T);
+                    } else if clean == "pagedown" {
+                        key = Some(egui::Key::PageDown);
+                    } else if clean == "pageup" {
+                        key = Some(egui::Key::PageUp);
+                    } else if clean == "right" {
+                        key = Some(egui::Key::ArrowRight);
+                    } else if clean == "left" {
+                        key = Some(egui::Key::ArrowLeft);
+                    }
+                }
+                if let Some(k) = key {
+                    ctx.input(|i| {
+                        let m = i.modifiers;
+                        (m.command == ctrl)
+                            && (m.alt == alt)
+                            && (m.shift == shift)
+                            && i.key_pressed(k)
+                    })
+                } else {
+                    false
+                }
+            };
+
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::ProcessViewer),
+            ) {
+                self.process_view.open = !self.process_view.open;
+                if self.process_view.open
+                    && let Some(tab) = self.tabs.get(self.active)
+                {
+                    self.process_view.loading = true;
+                    let _ = tab.session.commands.try_send(Command::ProcessList);
+                }
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::SnippetsLibrary),
+            ) {
+                self.snippets_ui.manager_open = !self.snippets_ui.manager_open;
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::MultiExec),
+            ) {
+                self.snippets_ui.broadcast_mode = !self.snippets_ui.broadcast_mode;
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::SplitVertical),
+            ) && let Some(tab) = self.tabs.get_mut(self.active)
+            {
+                tab.split_mode = SplitMode::Vertical;
+                if tab.secondary_terminal.is_none() {
+                    tab.secondary_terminal = Some(Terminal::with_profile(
+                        100,
+                        30,
+                        tab.terminal.profile().clone(),
+                    ));
+                }
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::SplitHorizontal),
+            ) && let Some(tab) = self.tabs.get_mut(self.active)
+            {
+                tab.split_mode = SplitMode::Horizontal;
+                if tab.secondary_terminal.is_none() {
+                    tab.secondary_terminal = Some(Terminal::with_profile(
+                        100,
+                        30,
+                        tab.terminal.profile().clone(),
+                    ));
+                }
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::ClosePane),
+            ) && let Some(tab) = self.tabs.get_mut(self.active)
+            {
+                tab.split_mode = SplitMode::None;
+                tab.secondary_terminal = None;
+                tab.active_pane = 0;
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::NewSession),
+            ) {
+                self.open_new_host();
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::NextTab),
+            ) && !self.tabs.is_empty()
+            {
+                self.active = (self.active + 1) % self.tabs.len();
+            }
+            if key_match(
+                self.settings
+                    .keybindings
+                    .get_shortcut(kervesh_core::KeyAction::PrevTab),
+            ) && !self.tabs.is_empty()
+            {
+                self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
+            }
         }
 
         // 1. Top Titlebar / Global Toolbar
@@ -854,6 +1249,20 @@ impl App {
                             colors::MUTED,
                         );
 
+                        if !tab.alerts.is_empty() {
+                            let alert_text = format!(
+                                "⚠ {} Alert{}",
+                                tab.alerts.len(),
+                                if tab.alerts.len() > 1 { "s" } else { "" }
+                            );
+                            ui.colored_label(colors::WARNING, alert_text)
+                                .on_hover_ui(|ui| {
+                                    for a in &tab.alerts {
+                                        ui.label(format!("{}: {}", a.metric, a.message));
+                                    }
+                                });
+                        }
+
                         if !tab.connected {
                             ui.label(&tab.status);
                             if ui.small_button("Reconnect").clicked() {
@@ -884,7 +1293,7 @@ impl App {
                                     self.settings.terminal_profile(Some(&profile_id)).clone(),
                                 );
                             }
-                            if ui.small_button("Save profile to host").clicked() {
+                            if ui.small_button("Save profile").clicked() {
                                 let mut host = tab.host.clone();
                                 host.terminal_profile = Some(profile_id);
                                 match self.store.save_host(&host) {
@@ -899,6 +1308,110 @@ impl App {
                                     Err(e) => tab.error = Some(e.to_string()),
                                 }
                             }
+                            if ui.small_button("🎨 Theme").on_hover_text("Open visual theme engine & ANSI palette editor").clicked() {
+                                self.theme_ui.open_for_profile(tab.terminal.profile());
+                            }
+
+                            ui.separator();
+                            if ui.small_button("⚡ Processes").on_hover_text("Open live remote process viewer").clicked() {
+                                self.process_view.open = true;
+                                self.process_view.loading = true;
+                                let _ = tab.session.commands.try_send(Command::ProcessList);
+                            }
+                            if ui.small_button("📑 Snippets").on_hover_text("Open command snippets library").clicked() {
+                                self.snippets_ui.manager_open = true;
+                            }
+                            let bcast_color = if self.snippets_ui.broadcast_mode { colors::WARNING } else { if dark { colors::FOREGROUND } else { colors::LIGHT_FOREGROUND } };
+                            if ui.small_button(RichText::new("📡 Broadcast").color(bcast_color)).on_hover_text("Toggle Multi-Exec broadcast across all active sessions").clicked() {
+                                self.snippets_ui.broadcast_mode = !self.snippets_ui.broadcast_mode;
+                            }
+                            let tunnels_btn_text = if !self.active_tunnels.is_empty() {
+                                format!("🔀 Tunnels ({})", self.active_tunnels.len())
+                            } else {
+                                "🔀 Tunnels".to_string()
+                            };
+                            let tunnels_color = if !self.active_tunnels.is_empty() {
+                                Color32::from_rgb(74, 222, 128)
+                            } else if dark {
+                                colors::FOREGROUND
+                            } else {
+                                colors::LIGHT_FOREGROUND
+                            };
+                            if ui.small_button(RichText::new(tunnels_btn_text).color(tunnels_color)).on_hover_text("Open SSH tunnel and proxy manager").clicked() {
+                                self.tunnels_open = true;
+                            }
+                            if ui.small_button("🏢 Workspaces").on_hover_text("Open session workspaces & clusters manager").clicked() {
+                                self.workspaces_open = true;
+                            }
+                            if ui.small_button("🤖 Macros").on_hover_text("Open automation sequences & login macros").clicked() {
+                                self.automation_open = true;
+                            }
+                            if ui.small_button("🧰 DevOps").on_hover_text("Open Docker, Systemd, and Network Diagnostics toolbox").clicked() {
+                                self.devops_ui.open = true;
+                                if self.devops_ui.containers.is_empty() {
+                                    let _ = tab.session.commands.try_send(Command::DockerList);
+                                }
+                            }
+                            if ui.small_button("📜 History").on_hover_text("Open unified command history & audit trail").clicked() {
+                                self.audit_ui.open = true;
+                                self.audit_ui.refresh(&self.store);
+                            }
+                            if ui.small_button("⚡ Triggers").on_hover_text("Open terminal output trigger-action rules").clicked() {
+                                self.triggers_ui.open = true;
+                            }
+                            if ui.small_button("🔐 Vault & Keys").on_hover_text("Open encrypted master vault and SSH key generator").clicked() {
+                                self.vault_ui.open = true;
+                                self.vault_ui.refresh_keys(&self.store);
+                            }
+                            let rec_btn_text = if let Some(rec) = &tab.recorder {
+                                format!("⏹ REC ({:.0}s)", rec.duration_secs())
+                            } else {
+                                "⏺ Record".to_string()
+                            };
+                            let rec_btn_color = if tab.recorder.is_some() {
+                                Color32::from_rgb(235, 87, 87)
+                            } else if dark {
+                                colors::FOREGROUND
+                            } else {
+                                colors::LIGHT_FOREGROUND
+                            };
+                            if ui.small_button(RichText::new(rec_btn_text).color(rec_btn_color)).on_hover_text("Start / stop session recording (Asciicast v2)").clicked() {
+                                if let Some(mut rec) = tab.recorder.take() {
+                                    if let Ok(p) = rec.stop() {
+                                        self.notice = Some(format!("Recording saved to {:?}", p));
+                                    }
+                                } else {
+                                    match kervesh_core::SessionRecorder::start(&format!("{}", tab.id), &tab.host.name, kervesh_core::RecordingFormat::AsciicastV2, None, 100, 30) {
+                                        Ok(rec) => {
+                                            tab.recorder = Some(rec);
+                                            self.notice = Some("Session recording started (Asciicast v2)".into());
+                                        }
+                                        Err(e) => {
+                                            tab.error = Some(format!("Recording failed: {}", e));
+                                        }
+                                    }
+                                }
+                            }
+
+                            ui.separator();
+                            if tab.split_mode == SplitMode::None {
+                                if ui.small_button("⬔ Split V").on_hover_text("Split pane vertically (side-by-side)").clicked() {
+                                    tab.split_mode = SplitMode::Vertical;
+                                    if tab.secondary_terminal.is_none() {
+                                        tab.secondary_terminal = Some(Terminal::with_profile(100, 30, tab.terminal.profile().clone()));
+                                    }
+                                }
+                                if ui.small_button("⬒ Split H").on_hover_text("Split pane horizontally (stacked)").clicked() {
+                                    tab.split_mode = SplitMode::Horizontal;
+                                    if tab.secondary_terminal.is_none() {
+                                        tab.secondary_terminal = Some(Terminal::with_profile(100, 30, tab.terminal.profile().clone()));
+                                    }
+                                }
+                            } else if ui.small_button("✕ Unsplit").on_hover_text("Close split pane").clicked() {
+                                tab.split_mode = SplitMode::None;
+                                tab.secondary_terminal = None;
+                                tab.active_pane = 0;
+                            }
                         }
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -911,6 +1424,33 @@ impl App {
                         });
                     });
 
+                    // Multi-Exec Broadcast Bar
+                    let mut broadcast_bytes: Option<Vec<u8>> = None;
+                    if self.snippets_ui.broadcast_mode {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(colors::WARNING, "📡 BROADCAST MODE ACTIVE");
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(&mut self.snippets_ui.broadcast_input)
+                                        .hint_text("Type command and press Enter to broadcast to all sessions…")
+                                        .desired_width(320.0),
+                                );
+                                let send = ui.button("Send to All").clicked() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                                if send && !self.snippets_ui.broadcast_input.is_empty() {
+                                    let mut cmd = self.snippets_ui.broadcast_input.clone();
+                                    if !cmd.ends_with('\n') {
+                                        cmd.push('\n');
+                                    }
+                                    broadcast_bytes = Some(cmd.into_bytes());
+                                    self.snippets_ui.broadcast_input.clear();
+                                }
+                                if ui.button("✕ Exit").clicked() {
+                                    self.snippets_ui.broadcast_mode = false;
+                                }
+                            });
+                        });
+                    }
+
                     if let Some(error) = tab.error.clone() {
                         ui.horizontal_wrapped(|ui| {
                             ui.colored_label(colors::WARNING, error);
@@ -922,7 +1462,7 @@ impl App {
 
                     ui.separator();
 
-                    // Terminal Widget
+                    // Terminal Widget & Split Panes
                     let modal = self.host_form.is_some()
                         || self.login.is_some()
                         || !self.trust.is_empty()
@@ -933,49 +1473,574 @@ impl App {
                         || tab.editor.is_some();
 
                     ui.add_enabled_ui(tab.connected && !modal, |ui| {
-                        let action = ui
-                            .push_id(tab.id, |ui| tab.terminal.show(ui, tab.sftp_available))
-                            .inner;
-                        if let Some(path) = action.reveal_path {
-                            tab.reveal_name = path.rsplit('/').next().map(str::to_owned);
-                            let directory = path
-                                .rsplit_once('/')
-                                .map(|(p, _)| if p.is_empty() { "/" } else { p })
-                                .unwrap_or("/")
-                                .to_owned();
-                            tab.follow_suspended = true;
-                            if tab
-                                .session
-                                .commands
-                                .try_send(Command::File(FileOperation::List(directory)))
-                                .is_err()
-                            {
-                                tab.error = Some("SFTP queue unavailable".into());
+                        let split_mode = tab.split_mode;
+                        let split_ratio = tab.split_ratio;
+
+                        match split_mode {
+                            SplitMode::None => {
+                                let action = ui
+                                    .push_id(tab.id, |ui| tab.terminal.show(ui, tab.sftp_available))
+                                    .inner;
+                                if let Some(path) = action.reveal_path {
+                                    tab.reveal_name = path.rsplit('/').next().map(str::to_owned);
+                                    let directory = path
+                                        .rsplit_once('/')
+                                        .map(|(p, _)| if p.is_empty() { "/" } else { p })
+                                        .unwrap_or("/")
+                                        .to_owned();
+                                    tab.follow_suspended = true;
+                                    let _ = tab.session.commands.try_send(Command::File(FileOperation::List(directory)));
+                                }
+                                if action.audio_bell {
+                                    self.runtime.spawn_blocking(crate::bell::play);
+                                }
+                                if let Some((cols, rows)) = action.resize {
+                                    let _ = tab.session.commands.try_send(Command::Resize(cols, rows));
+                                }
+                                if !action.input.is_empty() {
+                                    for &b in &action.input {
+                                        if b == b'\r' || b == b'\n' {
+                                            let cmd = tab.cmd_buffer.trim().to_string();
+                                            if !cmd.is_empty() {
+                                                let entry = kervesh_core::AuditCommandEntry::new(
+                                                    format!("{}", tab.id),
+                                                    &tab.host.id,
+                                                    &tab.host.name,
+                                                    cmd,
+                                                );
+                                                let _ = self.store.save_audit_command(&entry);
+                                            }
+                                            tab.cmd_buffer.clear();
+                                        } else if b == 0x08 || b == 0x7f {
+                                            tab.cmd_buffer.pop();
+                                        } else if (32..=126).contains(&b) {
+                                            tab.cmd_buffer.push(b as char);
+                                        }
+                                    }
+                                    let _ = tab.session.commands.try_send(Command::Input(action.input));
+                                }
                             }
-                        }
-                        if action.audio_bell {
-                            self.runtime.spawn_blocking(crate::bell::play);
-                        }
-                        if let Some((cols, rows)) = action.resize {
-                            let _ = tab.session.commands.try_send(Command::Resize(cols, rows));
-                        }
-                        if !action.input.is_empty()
-                            && tab
-                                .session
-                                .commands
-                                .try_send(Command::Input(action.input))
-                                .is_err()
-                        {
-                            tab.error =
-                                Some("Input queue full; terminal input was not sent".into());
+                            SplitMode::Vertical => {
+                                let available = ui.available_size();
+                                let w1 = (available.x * split_ratio - 4.0).max(100.0);
+                                let w2 = (available.x * (1.0 - split_ratio) - 4.0).max(100.0);
+                                ui.horizontal(|ui| {
+                                    ui.allocate_ui(egui::vec2(w1, available.y), |ui| {
+                                        let action = ui.push_id((tab.id, 0), |ui| tab.terminal.show(ui, tab.sftp_available)).inner;
+                                        if !action.input.is_empty() {
+                                            for &b in &action.input {
+                                                if b == b'\r' || b == b'\n' {
+                                                    let cmd = tab.cmd_buffer.trim().to_string();
+                                                    if !cmd.is_empty() {
+                                                        let entry = kervesh_core::AuditCommandEntry::new(
+                                                            format!("{}", tab.id),
+                                                            &tab.host.id,
+                                                            &tab.host.name,
+                                                            cmd,
+                                                        );
+                                                        let _ = self.store.save_audit_command(&entry);
+                                                    }
+                                                    tab.cmd_buffer.clear();
+                                                } else if b == 0x08 || b == 0x7f {
+                                                    tab.cmd_buffer.pop();
+                                                } else if (32..=126).contains(&b) {
+                                                    tab.cmd_buffer.push(b as char);
+                                                }
+                                            }
+                                            let _ = tab.session.commands.try_send(Command::Input(action.input));
+                                        }
+                                        if let Some((cols, rows)) = action.resize {
+                                            let _ = tab.session.commands.try_send(Command::Resize(cols, rows));
+                                        }
+                                    });
+                                    ui.separator();
+                                    ui.allocate_ui(egui::vec2(w2, available.y), |ui| {
+                                        if let Some(sec) = &mut tab.secondary_terminal {
+                                            let action = ui.push_id((tab.id, 1), |ui| sec.show(ui, tab.sftp_available)).inner;
+                                            if !action.input.is_empty() {
+                                                let _ = tab.session.commands.try_send(Command::Input(action.input));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            SplitMode::Horizontal => {
+                                let available = ui.available_size();
+                                let h1 = (available.y * split_ratio - 4.0).max(80.0);
+                                let h2 = (available.y * (1.0 - split_ratio) - 4.0).max(80.0);
+                                ui.vertical(|ui| {
+                                    ui.allocate_ui(egui::vec2(available.x, h1), |ui| {
+                                        let action = ui.push_id((tab.id, 0), |ui| tab.terminal.show(ui, tab.sftp_available)).inner;
+                                        if !action.input.is_empty() {
+                                            for &b in &action.input {
+                                                if b == b'\r' || b == b'\n' {
+                                                    let cmd = tab.cmd_buffer.trim().to_string();
+                                                    if !cmd.is_empty() {
+                                                        let entry = kervesh_core::AuditCommandEntry::new(
+                                                            format!("{}", tab.id),
+                                                            &tab.host.id,
+                                                            &tab.host.name,
+                                                            cmd,
+                                                        );
+                                                        let _ = self.store.save_audit_command(&entry);
+                                                    }
+                                                    tab.cmd_buffer.clear();
+                                                } else if b == 0x08 || b == 0x7f {
+                                                    tab.cmd_buffer.pop();
+                                                } else if (32..=126).contains(&b) {
+                                                    tab.cmd_buffer.push(b as char);
+                                                }
+                                            }
+                                            let _ = tab.session.commands.try_send(Command::Input(action.input));
+                                        }
+                                        if let Some((cols, rows)) = action.resize {
+                                            let _ = tab.session.commands.try_send(Command::Resize(cols, rows));
+                                        }
+                                    });
+                                    ui.separator();
+                                    ui.allocate_ui(egui::vec2(available.x, h2), |ui| {
+                                        if let Some(sec) = &mut tab.secondary_terminal {
+                                            let action = ui.push_id((tab.id, 1), |ui| sec.show(ui, tab.sftp_available)).inner;
+                                            if !action.input.is_empty() {
+                                                let _ = tab.session.commands.try_send(Command::Input(action.input));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
                         }
                     });
 
                     if let Some(host) = reconnect {
                         self.begin_connect(host, ctx);
                     }
+
+                    if let Some(bytes) = broadcast_bytes {
+                        for t in &mut self.tabs {
+                            if t.connected {
+                                let _ = t.session.commands.try_send(Command::Input(bytes.clone()));
+                            }
+                        }
+                    }
                 }
             });
+
+        // Process Viewer Window
+        let pv_action = if let Some(tab) = self.tabs.get(self.active) {
+            self.process_view.show(ctx, &tab.host.name, dark)
+        } else {
+            self.process_view.show(ctx, "No Active Session", dark)
+        };
+        match pv_action {
+            crate::process_view::ProcessViewAction::Refresh => {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    self.process_view.loading = true;
+                    let _ = tab.session.commands.try_send(Command::ProcessList);
+                }
+            }
+            crate::process_view::ProcessViewAction::SendSignal(pid, sig) => {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    let _ = tab
+                        .session
+                        .commands
+                        .try_send(Command::SignalProcess(pid, sig));
+                }
+            }
+            crate::process_view::ProcessViewAction::None => {}
+        }
+
+        // Snippets Modals
+        let snippet_action1 = self.snippets_ui.show_manager(ctx, &self.store, dark);
+        let snippet_action2 = self.snippets_ui.show_runner_modal(ctx);
+        let snippet_action = snippet_action1.or(snippet_action2);
+
+        if let Some(action) = snippet_action {
+            match action {
+                crate::snippets_ui::SnippetAction::InsertIntoActive(cmd) => {
+                    if let Some(tab) = self.tabs.get_mut(self.active) {
+                        let mut text = cmd;
+                        if !text.ends_with('\n') {
+                            text.push('\n');
+                        }
+                        let _ = tab
+                            .session
+                            .commands
+                            .try_send(Command::Input(text.into_bytes()));
+                    }
+                }
+                crate::snippets_ui::SnippetAction::BroadcastToAll(cmd) => {
+                    let mut text = cmd;
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    let bytes = text.into_bytes();
+                    for t in &mut self.tabs {
+                        if t.connected {
+                            let _ = t.session.commands.try_send(Command::Input(bytes.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tunnels Modal
+        let mut tunnel_stats_map = HashMap::new();
+        for (id, active) in &self.active_tunnels {
+            tunnel_stats_map.insert(id.clone(), active.stats());
+        }
+        let tunnel_action = self.tunnels_ui.ui(
+            ctx,
+            &self.tunnels,
+            &self.hosts,
+            &tunnel_stats_map,
+            &mut self.tunnels_open,
+        );
+        if let Some(action) = tunnel_action {
+            match action {
+                crate::tunnels::TunnelAction::Start(config) => {
+                    self.start_tunnel(config);
+                }
+                crate::tunnels::TunnelAction::Stop(id) => {
+                    self.stop_tunnel(&id);
+                }
+                crate::tunnels::TunnelAction::Save(config) => {
+                    if let Err(e) = self.store.save_tunnel(&config) {
+                        self.tunnels_ui.error_message = Some(e.to_string());
+                    } else {
+                        self.refresh_tunnels();
+                    }
+                }
+                crate::tunnels::TunnelAction::Delete(id) => {
+                    self.stop_tunnel(&id);
+                    if let Err(e) = self.store.delete_tunnel(&id) {
+                        self.tunnels_ui.error_message = Some(e.to_string());
+                    } else {
+                        self.refresh_tunnels();
+                    }
+                }
+            }
+        }
+
+        // Workspaces Modal
+        let ws_action = self.workspaces_ui.ui(
+            ctx,
+            &self.workspaces,
+            &self.hosts,
+            &mut self.workspaces_open,
+        );
+        if let Some(action) = ws_action {
+            match action {
+                crate::workspaces_ui::WorkspaceAction::ConnectAll(host_ids) => {
+                    for hid in host_ids {
+                        if let Some(host) = self.hosts.iter().find(|h| h.id == hid).cloned() {
+                            self.begin_connect(host, ctx);
+                        }
+                    }
+                }
+                crate::workspaces_ui::WorkspaceAction::Save(ws) => {
+                    if let Err(e) = self.store.save_workspace(&ws) {
+                        self.workspaces_ui.error_message = Some(e.to_string());
+                    } else {
+                        self.refresh_workspaces();
+                    }
+                }
+                crate::workspaces_ui::WorkspaceAction::Delete(id) => {
+                    if let Err(e) = self.store.delete_workspace(&id) {
+                        self.workspaces_ui.error_message = Some(e.to_string());
+                    } else {
+                        self.refresh_workspaces();
+                    }
+                }
+            }
+        }
+
+        // Automation Macros Modal
+        let macro_action =
+            self.automation_ui
+                .ui(ctx, &self.macros, &self.hosts, &mut self.automation_open);
+        if let Some(action) = macro_action {
+            match action {
+                crate::automation_ui::AutomationAction::RunOnActive(mac) => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::RunMacro(mac));
+                        } else {
+                            self.automation_ui.error_message =
+                                Some("Active session is not connected".into());
+                        }
+                    } else {
+                        self.automation_ui.error_message = Some("No active session tab".into());
+                    }
+                }
+                crate::automation_ui::AutomationAction::Save(mac) => {
+                    if let Err(e) = self.store.save_macro(&mac) {
+                        self.automation_ui.error_message = Some(e.to_string());
+                    } else {
+                        self.refresh_macros();
+                    }
+                }
+                crate::automation_ui::AutomationAction::Delete(id) => {
+                    if let Err(e) = self.store.delete_macro(&id) {
+                        self.automation_ui.error_message = Some(e.to_string());
+                    } else {
+                        self.refresh_macros();
+                    }
+                }
+            }
+        }
+
+        // Remote File Search Modal
+        let search_action = self.search_ui.show(ctx);
+        if let Some(action) = search_action {
+            match action {
+                crate::search_ui::SearchUiAction::ExecuteSearch(query) => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::SearchFiles(query));
+                        } else {
+                            self.search_ui
+                                .set_error("Active session is not connected".into());
+                        }
+                    } else {
+                        self.search_ui.set_error("No active session tab".into());
+                    }
+                }
+                crate::search_ui::SearchUiAction::OpenFile { path, .. } => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        let _ = tab
+                            .session
+                            .commands
+                            .try_send(Command::File(FileOperation::Read(path)));
+                    }
+                }
+                crate::search_ui::SearchUiAction::Close => {}
+            }
+        }
+
+        // Directory Sync Modal
+        let sync_action = self.sync_ui.show(ctx);
+        if let Some(action) = sync_action {
+            match action {
+                crate::sync_ui::SyncUiAction::ComputePlan {
+                    local_dir,
+                    remote_dir,
+                    direction,
+                    policy,
+                } => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::ComputeSyncPlan {
+                                local_dir: local_dir.into(),
+                                remote_dir,
+                                direction,
+                                policy,
+                            });
+                        } else {
+                            self.sync_ui
+                                .set_error("Active session is not connected".into());
+                        }
+                    } else {
+                        self.sync_ui.set_error("No active session tab".into());
+                    }
+                }
+                crate::sync_ui::SyncUiAction::ExecuteSync(plan) => {
+                    if let Some(tab) = self.tabs.get_mut(self.active) {
+                        if tab.connected {
+                            let transfer_id = self.next_id;
+                            self.next_id = self.next_id.wrapping_add(1);
+                            let cancel = kervesh_ssh::CancellationToken::new();
+                            let _ = tab.session.commands.try_send(Command::ExecuteSync {
+                                plan,
+                                transfer_id,
+                                cancel,
+                            });
+                            self.sync_ui
+                                .set_complete("Sync job queued and running in background".into());
+                        } else {
+                            self.sync_ui
+                                .set_error("Active session is not connected".into());
+                        }
+                    } else {
+                        self.sync_ui.set_error("No active session tab".into());
+                    }
+                }
+                crate::sync_ui::SyncUiAction::Close => {}
+            }
+        }
+
+        // Sysadmin & DevOps Modal
+        let devops_action = self.devops_ui.show(ctx);
+        if let Some(action) = devops_action {
+            match action {
+                crate::devops_ui::DevOpsUiAction::RefreshDocker => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::DockerList);
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                        }
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::DockerAction(id, act) => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab
+                                .session
+                                .commands
+                                .try_send(Command::DockerAction(id, act));
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                        }
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::DockerLogs(id) => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::DockerLogs(id));
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                        }
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::RefreshSystemd => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::SystemdList);
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                        }
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::SystemdAction(unit, act) => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab
+                                .session
+                                .commands
+                                .try_send(Command::SystemdAction(unit, act));
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                        }
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::SystemdLogs(unit) => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::SystemdLogs(unit));
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                        }
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::RunNetDiag {
+                    tool,
+                    target,
+                    port_or_type,
+                } => {
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        if tab.connected {
+                            let _ = tab.session.commands.try_send(Command::NetDiag {
+                                tool,
+                                target,
+                                port_or_type,
+                            });
+                        } else {
+                            self.devops_ui.error = Some("Active session is not connected".into());
+                            self.devops_ui.diag_running = false;
+                        }
+                    } else {
+                        self.devops_ui.error = Some("No active session tab".into());
+                        self.devops_ui.diag_running = false;
+                    }
+                }
+                crate::devops_ui::DevOpsUiAction::Close => {}
+            }
+        }
+
+        // Audit & History Modal
+        let mut audit_action = None;
+        self.audit_ui
+            .render(ctx, &self.store, &self.hosts, &mut audit_action);
+        if let Some(act) = audit_action {
+            match act {
+                crate::audit_ui::AuditUiAction::RunCommand(cmd) => {
+                    let mut cmd_bytes = cmd.into_bytes();
+                    cmd_bytes.push(b'\n');
+                    if let Some(tab) = self.tabs.get_mut(self.active) {
+                        let _ = tab.session.commands.try_send(Command::Input(cmd_bytes));
+                    }
+                }
+                crate::audit_ui::AuditUiAction::CopyCommand(cmd) => {
+                    ctx.copy_text(cmd);
+                }
+                crate::audit_ui::AuditUiAction::ClearHistory => {}
+            }
+        }
+
+        // Triggers UI Modal
+        let mut trigger_action = None;
+        self.triggers_ui
+            .render(ctx, &self.store, &self.hosts, &mut trigger_action);
+        if let Some(act) = trigger_action {
+            match act {
+                crate::triggers_ui::TriggerUiAction::TriggerSaved
+                | crate::triggers_ui::TriggerUiAction::TriggerDeleted => {
+                    let rules = self.store.triggers().unwrap_or_default();
+                    self.trigger_engine = kervesh_core::TriggerEngine::new(&rules);
+                    self.trigger_rules = rules;
+                }
+            }
+        }
+
+        // Encrypted Vault & Key Inventory Modal
+        let mut vault_action = None;
+        self.vault_ui
+            .render(ctx, &self.store, &self.hosts, &mut vault_action);
+        if let Some(act) = vault_action {
+            match act {
+                crate::vault_ui::VaultUiAction::DeployKeyToHost {
+                    host_id,
+                    public_key,
+                } => {
+                    let cmd_str = kervesh_core::generate_ssh_copy_id_command(&public_key);
+                    let mut cmd_bytes = cmd_str.into_bytes();
+                    cmd_bytes.push(b'\n');
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.host.id == host_id) {
+                        let _ = tab.session.commands.try_send(Command::Input(cmd_bytes));
+                        self.notice = Some("Key deployment command sent to host terminal".into());
+                    } else {
+                        self.notice = Some("Host not connected in active session".into());
+                    }
+                }
+                crate::vault_ui::VaultUiAction::CopyText(txt) => {
+                    ctx.copy_text(txt);
+                }
+            }
+        }
+
+        // Theme Engine & ANSI Palette Modal
+        let mut theme_action = None;
+        self.theme_ui
+            .render(ctx, &mut self.settings, &self.store, &mut theme_action);
+        if let Some(act) = theme_action {
+            match act {
+                crate::theme_ui::ThemeUiAction::ProfileUpdated => {
+                    for tab in &mut self.tabs {
+                        if tab.terminal.profile().id == self.theme_ui.active_profile_id {
+                            tab.terminal.set_profile(
+                                self.settings
+                                    .terminal_profile(Some(&self.theme_ui.active_profile_id))
+                                    .clone(),
+                            );
+                        }
+                    }
+                }
+                crate::theme_ui::ThemeUiAction::ExportPalette(json) => {
+                    ctx.copy_text(json);
+                    self.notice = Some("Palette JSON copied to clipboard".into());
+                }
+            }
+        }
 
         self.host_dialog(ctx);
         self.login_dialog(ctx);

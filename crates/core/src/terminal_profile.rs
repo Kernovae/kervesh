@@ -96,6 +96,209 @@ impl TerminalPalette {
             ],
         }
     }
+
+    pub fn dracula() -> Self {
+        Self {
+            kind: PaletteKind::Custom,
+            background: [40, 42, 54],
+            foreground: [248, 248, 242],
+            cursor: [248, 248, 242],
+            selection: [68, 71, 90],
+            ansi: [
+                [33, 34, 44],
+                [255, 85, 85],
+                [80, 250, 123],
+                [241, 250, 140],
+                [189, 147, 249],
+                [255, 121, 198],
+                [139, 233, 253],
+                [191, 191, 191],
+                [98, 114, 164],
+                [255, 110, 110],
+                [105, 250, 142],
+                [244, 250, 160],
+                [202, 169, 250],
+                [255, 146, 209],
+                [164, 238, 253],
+                [255, 255, 255],
+            ],
+        }
+    }
+
+    pub fn nord() -> Self {
+        Self {
+            kind: PaletteKind::Custom,
+            background: [46, 52, 64],
+            foreground: [236, 239, 244],
+            cursor: [236, 239, 244],
+            selection: [76, 86, 106],
+            ansi: [
+                [59, 66, 82],
+                [191, 97, 106],
+                [163, 190, 140],
+                [235, 203, 139],
+                [129, 161, 193],
+                [180, 142, 173],
+                [136, 192, 208],
+                [229, 233, 240],
+                [76, 86, 106],
+                [208, 135, 141],
+                [180, 203, 161],
+                [239, 214, 160],
+                [143, 188, 187],
+                [194, 163, 188],
+                [143, 188, 187],
+                [236, 239, 244],
+            ],
+        }
+    }
+
+    pub fn tokyo_night() -> Self {
+        Self {
+            kind: PaletteKind::Custom,
+            background: [26, 27, 38],
+            foreground: [192, 202, 245],
+            cursor: [192, 202, 245],
+            selection: [51, 70, 110],
+            ansi: [
+                [21, 22, 30],
+                [247, 118, 142],
+                [158, 206, 106],
+                [224, 175, 104],
+                [122, 162, 247],
+                [187, 154, 247],
+                [125, 207, 255],
+                [169, 177, 214],
+                [65, 72, 104],
+                [247, 118, 142],
+                [158, 206, 106],
+                [224, 175, 104],
+                [122, 162, 247],
+                [187, 154, 247],
+                [125, 207, 255],
+                [192, 202, 245],
+            ],
+        }
+    }
+
+    pub fn catppuccin_mocha() -> Self {
+        Self {
+            kind: PaletteKind::Custom,
+            background: [30, 30, 46],
+            foreground: [205, 214, 244],
+            cursor: [245, 224, 220],
+            selection: [88, 91, 112],
+            ansi: [
+                [69, 71, 90],
+                [243, 139, 168],
+                [166, 227, 161],
+                [249, 226, 175],
+                [137, 180, 250],
+                [245, 194, 231],
+                [148, 226, 213],
+                [186, 194, 222],
+                [88, 91, 112],
+                [243, 139, 168],
+                [166, 227, 161],
+                [249, 226, 175],
+                [137, 180, 250],
+                [245, 194, 231],
+                [148, 226, 213],
+                [166, 173, 200],
+            ],
+        }
+    }
+
+    pub fn gruvbox_dark() -> Self {
+        Self {
+            kind: PaletteKind::Custom,
+            background: [40, 40, 40],
+            foreground: [235, 219, 178],
+            cursor: [235, 219, 178],
+            selection: [80, 73, 69],
+            ansi: [
+                [40, 40, 40],
+                [204, 36, 29],
+                [152, 151, 26],
+                [215, 153, 33],
+                [69, 133, 136],
+                [177, 98, 134],
+                [104, 157, 106],
+                [168, 153, 132],
+                [146, 131, 116],
+                [251, 73, 52],
+                [184, 187, 38],
+                [250, 189, 47],
+                [131, 165, 152],
+                [211, 134, 155],
+                [142, 192, 124],
+                [235, 219, 178],
+            ],
+        }
+    }
+
+    pub fn one_dark() -> Self {
+        Self {
+            kind: PaletteKind::Custom,
+            background: [40, 44, 52],
+            foreground: [171, 178, 191],
+            cursor: [82, 139, 255],
+            selection: [62, 68, 81],
+            ansi: [
+                [40, 44, 52],
+                [224, 108, 117],
+                [152, 195, 121],
+                [229, 192, 123],
+                [97, 175, 239],
+                [198, 120, 221],
+                [86, 182, 194],
+                [171, 178, 191],
+                [92, 99, 112],
+                [224, 108, 117],
+                [152, 195, 121],
+                [229, 192, 123],
+                [97, 175, 239],
+                [198, 120, 221],
+                [86, 182, 194],
+                [255, 255, 255],
+            ],
+        }
+    }
+
+    /// Calculates sRGB relative luminance according to WCAG specifications
+    pub fn relative_luminance(rgb: [u8; 3]) -> f32 {
+        let channel = |c: u8| -> f32 {
+            let s = c as f32 / 255.0;
+            if s <= 0.03928 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+    }
+
+    /// Calculates WCAG contrast ratio between two colors (ranging from 1.0 to 21.0)
+    pub fn contrast_ratio(c1: [u8; 3], c2: [u8; 3]) -> f32 {
+        let l1 = Self::relative_luminance(c1);
+        let l2 = Self::relative_luminance(c2);
+        let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// Checks if foreground/background meet WCAG AA standard (>= 4.5:1)
+    pub fn is_wcag_aa(c1: [u8; 3], c2: [u8; 3]) -> bool {
+        Self::contrast_ratio(c1, c2) >= 4.5
+    }
+
+    pub fn export_json(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    pub fn import_json(json: &str) -> Result<Self> {
+        let palette: Self = serde_json::from_str(json)?;
+        Ok(palette)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

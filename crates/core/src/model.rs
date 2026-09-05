@@ -10,7 +10,7 @@ pub enum AuthMethod {
     Agent,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Host {
     pub terminal_profile: Option<String>,
@@ -27,6 +27,20 @@ pub struct Host {
     pub timeout_secs: u64,
     pub keepalive_secs: u64,
     pub auto_reconnect: bool,
+    pub jump_host: Option<String>,
+    pub proxy_jump: Option<String>,
+    pub proxy_command: Option<String>,
+    pub forward_agent: bool,
+    pub local_forwards: Vec<String>,
+    pub remote_forwards: Vec<String>,
+    pub dynamic_forwards: Vec<u16>,
+    pub thresholds: Option<crate::MonitorThresholds>,
+    pub protocol: crate::protocol::ProtocolKind,
+    pub serial_config: Option<crate::protocol::SerialConfig>,
+    pub telnet_config: Option<crate::protocol::TelnetConfig>,
+    pub ftp_config: Option<crate::protocol::FtpConfig>,
+    pub rdp_config: Option<crate::protocol::RemoteDesktopConfig>,
+    pub x11: Option<crate::x11::X11ForwardingConfig>,
     #[serde(skip)]
     pub last_connected: i64,
 }
@@ -47,6 +61,20 @@ impl Default for Host {
             timeout_secs: 15,
             keepalive_secs: 30,
             auto_reconnect: false,
+            jump_host: None,
+            proxy_jump: None,
+            proxy_command: None,
+            forward_agent: false,
+            local_forwards: Vec::new(),
+            remote_forwards: Vec::new(),
+            dynamic_forwards: Vec::new(),
+            thresholds: None,
+            protocol: crate::protocol::ProtocolKind::SSH,
+            serial_config: None,
+            telnet_config: None,
+            ftp_config: None,
+            rdp_config: None,
+            x11: None,
             last_connected: 0,
         }
     }
@@ -54,22 +82,28 @@ impl Default for Host {
 impl Host {
     pub fn validate(&self) -> Result<()> {
         Uuid::parse_str(&self.id)?;
-        for (label, value) in [
-            ("Name", &self.name),
-            ("Host", &self.hostname),
-            ("User", &self.username),
-        ] {
-            ensure!(!value.trim().is_empty(), "{label} is required");
+        if self.protocol == crate::protocol::ProtocolKind::Serial {
+            ensure!(!self.name.trim().is_empty(), "Name is required");
+            if let Some(cfg) = &self.serial_config {
+                cfg.validate()?;
+            }
+        } else {
+            for (label, value) in [("Name", &self.name), ("Host", &self.hostname)] {
+                ensure!(!value.trim().is_empty(), "{label} is required");
+                ensure!(
+                    value.len() <= 255 && !value.chars().any(char::is_control),
+                    "Invalid {label}"
+                );
+            }
+            if self.protocol == crate::protocol::ProtocolKind::SSH {
+                ensure!(!self.username.trim().is_empty(), "User is required");
+            }
             ensure!(
-                value.len() <= 255 && !value.chars().any(char::is_control),
-                "Invalid {label}"
+                !self.hostname.chars().any(char::is_whitespace),
+                "Host cannot contain whitespace"
             );
+            ensure!(self.port > 0, "Port must be between 1 and 65535");
         }
-        ensure!(
-            !self.hostname.chars().any(char::is_whitespace),
-            "Host cannot contain whitespace"
-        );
-        ensure!(self.port > 0, "Port must be between 1 and 65535");
         ensure!(
             (1..=300).contains(&self.timeout_secs),
             "Timeout must be 1–300 seconds"
@@ -104,6 +138,13 @@ impl Host {
         .to_lowercase()
         .contains(&query.to_lowercase())
     }
+    pub fn tag_list(&self) -> Vec<&str> {
+        self.tags
+            .split([',', ' ', ';'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,6 +159,12 @@ pub struct Settings {
     pub show_hidden: bool,
     pub sidebar: bool,
     pub sftp_panel: bool,
+    pub default_thresholds: crate::MonitorThresholds,
+    pub keybindings: crate::KeyBindingsConfig,
+    pub cpu_interval_secs: u64,
+    pub memory_interval_secs: u64,
+    pub disk_interval_secs: u64,
+    pub network_interval_secs: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -131,6 +178,12 @@ impl Default for Settings {
             show_hidden: false,
             sidebar: true,
             sftp_panel: true,
+            default_thresholds: crate::MonitorThresholds::default(),
+            keybindings: crate::KeyBindingsConfig::default(),
+            cpu_interval_secs: 2,
+            memory_interval_secs: 2,
+            disk_interval_secs: 10,
+            network_interval_secs: 2,
         }
     }
 }
@@ -172,6 +225,13 @@ impl Settings {
             (1..=300).contains(&self.monitor_secs),
             "Monitor interval must be 1–300 seconds"
         );
+        ensure!(
+            (1..=300).contains(&self.cpu_interval_secs)
+                && (1..=300).contains(&self.memory_interval_secs)
+                && (1..=300).contains(&self.disk_interval_secs)
+                && (1..=300).contains(&self.network_interval_secs),
+            "Metric intervals must be 1–300 seconds"
+        );
         Ok(())
     }
 }
@@ -188,6 +248,12 @@ struct SettingsWire {
     sftp_panel: bool,
     terminal_profiles: Option<Vec<crate::TerminalProfile>>,
     default_terminal_profile: String,
+    default_thresholds: Option<crate::MonitorThresholds>,
+    keybindings: Option<crate::KeyBindingsConfig>,
+    cpu_interval_secs: Option<u64>,
+    memory_interval_secs: Option<u64>,
+    disk_interval_secs: Option<u64>,
+    network_interval_secs: Option<u64>,
 }
 impl Default for SettingsWire {
     fn default() -> Self {
@@ -202,6 +268,12 @@ impl Default for SettingsWire {
             sftp_panel: s.sftp_panel,
             terminal_profiles: None,
             default_terminal_profile: s.default_terminal_profile,
+            default_thresholds: None,
+            keybindings: None,
+            cpu_interval_secs: Some(s.cpu_interval_secs),
+            memory_interval_secs: Some(s.memory_interval_secs),
+            disk_interval_secs: Some(s.disk_interval_secs),
+            network_interval_secs: Some(s.network_interval_secs),
         }
     }
 }
@@ -223,6 +295,12 @@ impl From<SettingsWire> for Settings {
             sftp_panel: s.sftp_panel,
             terminal_profiles,
             default_terminal_profile: s.default_terminal_profile,
+            default_thresholds: s.default_thresholds.unwrap_or_default(),
+            keybindings: s.keybindings.unwrap_or_default(),
+            cpu_interval_secs: s.cpu_interval_secs.unwrap_or(2),
+            memory_interval_secs: s.memory_interval_secs.unwrap_or(2),
+            disk_interval_secs: s.disk_interval_secs.unwrap_or(10),
+            network_interval_secs: s.network_interval_secs.unwrap_or(2),
         }
     }
 }

@@ -81,17 +81,21 @@ pub fn set_clipboard_text(text: &str) {
 }
 
 pub fn set_primary_text(text: &str) {
-    if text.is_empty() {
-        return;
-    }
     #[cfg(target_os = "linux")]
     {
+        if text.is_empty() {
+            return;
+        }
         let _ = with_clipboard(|cb| {
             let _ = cb
                 .set()
                 .clipboard(LinuxClipboardKind::Primary)
                 .text(text.to_owned());
         });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = text;
     }
 }
 
