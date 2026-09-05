@@ -1,0 +1,36 @@
+name: Bug report
+description: Report reproducible application failures.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: Do not include passwords, private keys, private hostnames, or terminal secrets. Report security vulnerabilities privately to maintainers.
+  - type: input
+    id: version
+    attributes:
+      label: Kervesh version or commit
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use a disposable host or sanitized example when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or screenshots

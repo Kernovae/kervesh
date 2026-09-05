@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose focused improvements to the remote workspace.
+title: "feat: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the user workflow and current limitation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and alternatives
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Requirements and platform impact
+      description: Link related requirements and explain Windows/Linux impact.

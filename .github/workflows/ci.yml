@@ -1,0 +1,97 @@
+name: Native checks
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    timeout-minutes: 45
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Linux build and integration dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev openssh-server rpm
+          sudo mkdir -p /run/sshd
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - name: Real OpenSSH integration
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-loopback.py
+      - run: cargo build --locked --release -p kervesh
+      - name: Archive native executable
+        run: python scripts/package.py
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/package.py --format deb
+          python3 scripts/package.py --format rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kervesh-${{ runner.os }}
+          path: artifacts/
+          if-no-files-found: error
+  linux-distributions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:stable, fedora:latest]
+    container: ${{ matrix.image }}
+    steps:
+      - name: Bootstrap build dependencies
+        shell: bash
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update
+            apt-get install -y curl ca-certificates git build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev
+          else
+            dnf install -y curl ca-certificates git gcc gcc-c++ make pkgconf-pkg-config libX11-devel libxkbcommon-devel wayland-devel mesa-libEGL-devel mesa-libGL-devel
+          fi
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: cargo test --locked --workspace
+  required-ci:
+    name: Required CI
+    if: ${{ always() }}
+    needs: [native, linux-distributions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every platform job to succeed
+        shell: bash
+        env:
+          NATIVE_RESULT: ${{ needs.native.result }}
+          DISTRIBUTIONS_RESULT: ${{ needs.linux-distributions.result }}
+        run: |
+          set -Eeuo pipefail
+          test "$NATIVE_RESULT" = success
+          test "$DISTRIBUTIONS_RESULT" = success
