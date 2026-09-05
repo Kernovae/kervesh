@@ -10,5 +10,5 @@ alacritty_terminal = "0.26.0"
 egui.workspace = true
 kervesh-core.workspace = true
 ab_glyph = "0.2.32"
-arboard = "3.4"
+arboard = { version = "3.4", features = ["wayland-data-control"] }
 

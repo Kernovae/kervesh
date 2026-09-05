@@ -160,14 +160,30 @@ impl Terminal {
                     }
                 }
             }
-            if self.profile.copy_on_select
-                && (response.drag_stopped()
-                    || response.double_clicked()
-                    || response.triple_clicked())
+            if (response.drag_stopped() || response.double_clicked() || response.triple_clicked())
                 && let Some(text) = self.selection_text()
             {
-                crate::set_clipboard_text(&text);
-                ui.ctx().copy_text(text);
+                crate::set_primary_text(&text);
+                if self.profile.copy_on_select {
+                    crate::set_clipboard_text(&text);
+                    ui.ctx().copy_text(text);
+                }
+            }
+            if !mouse_mode
+                && response.hovered()
+                && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle))
+                && let Some(text) = crate::get_primary_text().or_else(crate::get_clipboard_text)
+            {
+                if self.profile.multiline_paste_policy != MultilinePastePolicy::Off
+                    && crate::paste_lines(&text) > 1
+                {
+                    self.pending_paste = Some(text);
+                } else {
+                    action.input.extend(encode_paste(
+                        &text,
+                        mode.contains(TermMode::BRACKETED_PASTE),
+                    ));
+                }
             }
             if response.hovered() && !mouse_mode {
                 let scroll = ui.input(|i| i.raw_scroll_delta.y);

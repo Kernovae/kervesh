@@ -9,16 +9,89 @@ pub enum ClipboardIntent {
     Control(u8),
 }
 
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(target_os = "linux")]
+use arboard::{GetExtLinux, LinuxClipboardKind, SetExtLinux};
+
+static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
+
+fn with_clipboard<R>(f: impl FnOnce(&mut arboard::Clipboard) -> R) -> Option<R> {
+    let mutex = CLIPBOARD.get_or_init(|| Mutex::new(arboard::Clipboard::new().ok()));
+    let mut guard = mutex.lock().ok()?;
+    if guard.is_none() {
+        *guard = arboard::Clipboard::new().ok();
+    }
+    guard.as_mut().map(f)
+}
+
 pub fn get_clipboard_text() -> Option<String> {
-    arboard::Clipboard::new()
-        .ok()
-        .and_then(|mut cb| cb.get_text().ok())
-        .filter(|s| !s.is_empty())
+    with_clipboard(|cb| {
+        #[cfg(target_os = "linux")]
+        {
+            cb.get()
+                .clipboard(LinuxClipboardKind::Clipboard)
+                .text()
+                .or_else(|_| cb.get_text())
+                .ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            cb.get_text().ok()
+        }
+    })
+    .flatten()
+    .filter(|s| !s.is_empty())
+}
+
+pub fn get_primary_text() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        with_clipboard(|cb| cb.get().clipboard(LinuxClipboardKind::Primary).text().ok())
+            .flatten()
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 pub fn set_clipboard_text(text: &str) {
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(text);
+    if text.is_empty() {
+        return;
+    }
+    let _ = with_clipboard(|cb| {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = cb
+                .set()
+                .clipboard(LinuxClipboardKind::Clipboard)
+                .text(text.to_owned());
+            let _ = cb
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(text.to_owned());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = cb.set_text(text.to_owned());
+        }
+    });
+}
+
+pub fn set_primary_text(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = with_clipboard(|cb| {
+            let _ = cb
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(text.to_owned());
+        });
     }
 }
 

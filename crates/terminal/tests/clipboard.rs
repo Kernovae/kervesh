@@ -196,3 +196,37 @@ fn paste_preserves_contents_and_normalizes_both_protocols() {
     );
     assert_eq!(encode_paste("a\r\nb\rc\n", false), b"a\rb\rc\r");
 }
+
+#[test]
+fn custom_glyph_recognizes_braille_powerline_box_and_blocks() {
+    use kervesh_terminal::is_custom_glyph;
+    // Braille patterns (anime art / charts)
+    assert!(is_custom_glyph('⠀')); // U+2800 blank
+    assert!(is_custom_glyph('⣿')); // U+28FF full
+    assert!(is_custom_glyph('⢀')); // U+2880
+    assert!(is_custom_glyph('⣠')); // U+28E0
+
+    // Box drawing & blocks
+    assert!(is_custom_glyph('┌'));
+    assert!(is_custom_glyph('█'));
+    assert!(is_custom_glyph('▀'));
+    assert!(is_custom_glyph('▄'));
+    assert!(is_custom_glyph('░'));
+
+    // Powerline
+    assert!(is_custom_glyph('\u{E0B0}'));
+    assert!(is_custom_glyph('\u{E0B2}'));
+
+    // Standard ASCII
+    assert!(!is_custom_glyph('a'));
+    assert!(!is_custom_glyph('1'));
+    assert!(!is_custom_glyph('$'));
+}
+
+#[test]
+fn clipboard_get_and_set_functions_do_not_panic() {
+    kervesh_terminal::set_clipboard_text("test_clipboard_payload");
+    kervesh_terminal::set_primary_text("test_primary_payload");
+    let _ = kervesh_terminal::get_clipboard_text();
+    let _ = kervesh_terminal::get_primary_text();
+}

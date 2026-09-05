@@ -5,9 +5,14 @@ pub fn is_custom_glyph(c: char) -> bool {
         c,
         '\u{2500}'..='\u{257F}' // Box Drawing
         | '\u{2580}'..='\u{259F}' // Block Elements
+        | '\u{2800}'..='\u{28FF}' // Braille Patterns (fastfetch, anime art, ascii charts)
         | '\u{2190}'..='\u{2199}' // Arrows (←, ↑, →, ↓, ↔, ↕, ↖, ↗, ↘, ↙)
         | '\u{25B2}' | '\u{25BC}' | '\u{25C0}' | '\u{25B6}' // Triangles ▲ ▼ ◀ ▶
         | '\u{25C6}' | '\u{25CF}' | '\u{25CB}' // Diamond, filled/open circle ◆ ● ○
+        | '\u{2022}' | '\u{00B7}' | '\u{2219}' | '\u{25AA}' | '\u{25AB}' // Dots, bullets, small squares
+        | '\u{2713}' | '\u{2714}' | '\u{2715}' | '\u{2716}' // Checkmarks & crosses
+        | '\u{E0B0}'..='\u{E0B7}' // Powerline arrows & dividers
+        | '\u{E0A0}'..='\u{E0A3}' // Powerline symbols
     )
 }
 
@@ -387,6 +392,83 @@ pub fn draw_custom_glyph(painter: &egui::Painter, rect: Rect, c: char, fg: Color
         }
     }
 
+    // 1.5. Braille Patterns (U+2800 - U+28FF)
+    if ('\u{2800}'..='\u{28FF}').contains(&c) {
+        let code = (c as u32) - 0x2800;
+        if code == 0 {
+            return true;
+        }
+        let x_left = left + width * 0.28;
+        let x_right = left + width * 0.72;
+        let y0 = top + height * 0.16;
+        let y1 = top + height * 0.38;
+        let y2 = top + height * 0.62;
+        let y3 = top + height * 0.84;
+        let radius = (width.min(height) * 0.12).clamp(0.9, 1.8);
+
+        let dot_positions = [
+            (0x01, x_left, y0),  // Dot 1 (top-left)
+            (0x02, x_left, y1),  // Dot 2 (upper-mid-left)
+            (0x04, x_left, y2),  // Dot 3 (lower-mid-left)
+            (0x08, x_right, y0), // Dot 4 (top-right)
+            (0x10, x_right, y1), // Dot 5 (upper-mid-right)
+            (0x20, x_right, y2), // Dot 6 (lower-mid-right)
+            (0x40, x_left, y3),  // Dot 7 (bottom-left)
+            (0x80, x_right, y3), // Dot 8 (bottom-right)
+        ];
+        for (mask, x, y) in dot_positions {
+            if (code & mask) != 0 {
+                painter.circle_filled(egui::pos2(x, y), radius, fg);
+            }
+        }
+        return true;
+    }
+
+    // 1.6. Powerline glyphs (U+E0B0 - U+E0B7)
+    if ('\u{E0B0}'..='\u{E0B7}').contains(&c) {
+        match c {
+            '\u{E0B0}' => {
+                let pts = vec![
+                    egui::pos2(left, top),
+                    egui::pos2(right, cy),
+                    egui::pos2(left, bottom),
+                ];
+                painter.add(egui::epaint::PathShape::convex_polygon(
+                    pts,
+                    fg,
+                    Stroke::NONE,
+                ));
+                return true;
+            }
+            '\u{E0B1}' => {
+                let stroke = Stroke::new(stroke_light, fg);
+                painter.line_segment([egui::pos2(left, top), egui::pos2(right, cy)], stroke);
+                painter.line_segment([egui::pos2(right, cy), egui::pos2(left, bottom)], stroke);
+                return true;
+            }
+            '\u{E0B2}' => {
+                let pts = vec![
+                    egui::pos2(right, top),
+                    egui::pos2(left, cy),
+                    egui::pos2(right, bottom),
+                ];
+                painter.add(egui::epaint::PathShape::convex_polygon(
+                    pts,
+                    fg,
+                    Stroke::NONE,
+                ));
+                return true;
+            }
+            '\u{E0B3}' => {
+                let stroke = Stroke::new(stroke_light, fg);
+                painter.line_segment([egui::pos2(right, top), egui::pos2(left, cy)], stroke);
+                painter.line_segment([egui::pos2(left, cy), egui::pos2(right, bottom)], stroke);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // 3. Triangles & Geometric symbols
     match c {
         '▲' => {
@@ -455,7 +537,7 @@ pub fn draw_custom_glyph(painter: &egui::Painter, rect: Rect, c: char, fg: Color
             ));
             return true;
         }
-        '●' => {
+        '●' | '•' => {
             let radius = (width.min(height) * 0.35).max(2.0);
             painter.circle_filled(egui::pos2(cx, cy), radius, fg);
             return true;
@@ -463,6 +545,66 @@ pub fn draw_custom_glyph(painter: &egui::Painter, rect: Rect, c: char, fg: Color
         '○' => {
             let radius = (width.min(height) * 0.35).max(2.0);
             painter.circle_stroke(egui::pos2(cx, cy), radius, Stroke::new(stroke_light, fg));
+            return true;
+        }
+        '·' | '∙' => {
+            let radius = (width.min(height) * 0.16).max(1.0);
+            painter.circle_filled(egui::pos2(cx, cy), radius, fg);
+            return true;
+        }
+        '▪' => {
+            let size = (width.min(height) * 0.35).max(2.0);
+            painter.rect_filled(
+                Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(size, size)),
+                0.0,
+                fg,
+            );
+            return true;
+        }
+        '▫' => {
+            let size = (width.min(height) * 0.35).max(2.0);
+            painter.rect_stroke(
+                Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(size, size)),
+                0.0,
+                Stroke::new(stroke_light, fg),
+                egui::StrokeKind::Inside,
+            );
+            return true;
+        }
+        '✓' | '✔' => {
+            let stroke = Stroke::new(stroke_light * 1.3, fg);
+            painter.line_segment(
+                [
+                    egui::pos2(left + width * 0.18, cy + height * 0.05),
+                    egui::pos2(left + width * 0.42, bottom - height * 0.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(left + width * 0.42, bottom - height * 0.2),
+                    egui::pos2(right - width * 0.15, top + height * 0.2),
+                ],
+                stroke,
+            );
+            return true;
+        }
+        '✕' | '✖' => {
+            let stroke = Stroke::new(stroke_light * 1.3, fg);
+            painter.line_segment(
+                [
+                    egui::pos2(left + width * 0.2, top + height * 0.2),
+                    egui::pos2(right - width * 0.2, bottom - height * 0.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(right - width * 0.2, top + height * 0.2),
+                    egui::pos2(left + width * 0.2, bottom - height * 0.2),
+                ],
+                stroke,
+            );
             return true;
         }
         _ => {}
