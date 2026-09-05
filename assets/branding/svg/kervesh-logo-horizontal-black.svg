@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320">
+      <g transform="translate(20,32) scale(1.0)">
+        
+    <rect x="34" y="28" width="50" height="200" rx="7" fill="#111111"/>
+    <path d="M91 118 L158 40 H226 L141 126 H108 Z" fill="#111111"/>
+    <path d="M108 130 H141 L226 216 H158 L91 138 Z" fill="#111111"/>
+    <rect x="79" y="120" width="43" height="16" rx="8" fill="#111111"/>
+    <circle cx="91" cy="128" r="10" fill="#111111"/>
+    
+      </g>
+      <text x="330" y="198" fill="#111111" font-family="Inter, Arial, Helvetica, sans-serif"
+            font-size="122" font-weight="700" letter-spacing="22">KERVESH</text>
+    </svg>

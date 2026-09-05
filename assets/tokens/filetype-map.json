@@ -1,0 +1,114 @@
+{
+  "folder": [
+    "directory"
+  ],
+  "symlink": [
+    "symlink"
+  ],
+  "pdf": [
+    ".pdf"
+  ],
+  "text": [
+    ".txt",
+    ".text",
+    ".nfo"
+  ],
+  "markdown": [
+    ".md",
+    ".markdown"
+  ],
+  "rust": [
+    ".rs"
+  ],
+  "shell": [
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".fish"
+  ],
+  "config": [
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".cfg",
+    ".properties",
+    ".env"
+  ],
+  "json": [
+    ".json",
+    ".jsonl",
+    ".ndjson"
+  ],
+  "image": [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".bmp",
+    ".ico"
+  ],
+  "archive": [
+    ".zip",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".zst"
+  ],
+  "database": [
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".sql",
+    ".duckdb",
+    ".parquet"
+  ],
+  "key": [
+    ".key",
+    ".pem",
+    ".ppk",
+    "id_rsa",
+    "id_ed25519"
+  ],
+  "certificate": [
+    ".crt",
+    ".cer",
+    ".p12",
+    ".pfx"
+  ],
+  "executable": [
+    ".exe",
+    ".msi",
+    ".appimage",
+    ".deb",
+    ".rpm"
+  ],
+  "code": [
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".go",
+    ".py",
+    ".js",
+    ".ts",
+    ".java",
+    ".kt",
+    ".lua",
+    ".rb"
+  ],
+  "log": [
+    ".log",
+    ".out"
+  ],
+  "generic": [
+    "fallback"
+  ]
+}

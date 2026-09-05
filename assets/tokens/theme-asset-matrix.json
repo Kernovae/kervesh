@@ -1,0 +1,21 @@
+{
+  "selection_rules": {
+    "window_branding": "Use app-theme assets.",
+    "tray_or_shell_icon": "Use OS-theme assets.",
+    "app_icon": "Use the explicit OS-theme + app-theme combination when platform permits dynamic selection; otherwise use the neutral default.",
+    "dark_app_on_light_os": "Use white mark on charcoal/black tile; do not use a transparent black mark because it disappears on the light shell/window boundary.",
+    "light_app_on_dark_os": "Use black mark on light tile with subtle border; do not use a transparent white mark for the packaged app icon."
+  },
+  "matrix": {
+    "os-dark/app-dark": "adaptive/os-dark/app-dark/kervesh-app.svg",
+    "os-dark/app-light": "adaptive/os-dark/app-light/kervesh-app.svg",
+    "os-light/app-dark": "adaptive/os-light/app-dark/kervesh-app.svg",
+    "os-light/app-light": "adaptive/os-light/app-light/kervesh-app.svg"
+  },
+  "symbolic": {
+    "tray_dark_os": "adaptive/tray/kervesh-tray-for-dark-os.svg",
+    "tray_light_os": "adaptive/tray/kervesh-tray-for-light-os.svg",
+    "titlebar_dark_app": "adaptive/titlebar/kervesh-titlebar-for-dark-app.svg",
+    "titlebar_light_app": "adaptive/titlebar/kervesh-titlebar-for-light-app.svg"
+  }
+}

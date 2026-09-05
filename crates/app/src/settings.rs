@@ -1,5 +1,5 @@
 use crate::app::{App, Confirmation};
-use egui::{Color32, RichText};
+use egui::RichText;
 use kervesh_core::{Settings, bytes};
 use kervesh_ssh::Command;
 
@@ -24,11 +24,30 @@ impl App {
             ui.separator();ui.heading("Portable connections");ui.label("Versioned JSON export includes hosts and preferences. Passwords, passphrases, trusted fingerprints and recent history are excluded.");
             ui.horizontal(|ui|{export=ui.button("Export JSON…").clicked();import=ui.button("Import JSON…").clicked();});
             ui.separator();ui.heading("Trusted host keys");
-            match self.store.known_hosts(){
-                Ok(hosts)=>{if hosts.is_empty(){ui.label("No trusted hosts yet.");}for (host,port,fingerprint) in hosts{ui.horizontal(|ui|{ui.monospace(format!("{host}:{port}"));if ui.small_button("Remove…").clicked(){forget=Some((host.clone(),port));}});ui.label(RichText::new(fingerprint).monospace().small());}}
-                Err(e)=>{ui.colored_label(Color32::LIGHT_RED,e.to_string());}
+            match self.store.known_hosts() {
+                Ok(hosts) => {
+                    if hosts.is_empty() {
+                        ui.label("No trusted hosts yet.");
+                    }
+                    for (host, port, fingerprint) in hosts {
+                        ui.horizontal(|ui| {
+                            ui.monospace(format!("{host}:{port}"));
+                            if ui.small_button("Remove…").clicked() {
+                                forget = Some((host.clone(), port));
+                            }
+                        });
+                        ui.label(RichText::new(fingerprint).monospace().small());
+                    }
+                }
+                Err(e) => {
+                    ui.colored_label(crate::theme::colors::DANGER, e.to_string());
+                }
             }
-            ui.separator();ui.heading("Keyboard");ui.label("Terminal: Ctrl+C sends interrupt · Ctrl+Shift+C copies selection · Ctrl+Shift+V pastes · Shift+PageUp/Down scrolls history · Shift+drag selects while remote mouse mode is active.");
+            ui.separator();
+            ui.heading("Keyboard");
+            ui.label(
+                "Terminal: Ctrl+C sends interrupt · Ctrl+Shift+C copies selection · Ctrl+Shift+V pastes · Shift+PageUp/Down scrolls history · Shift+drag selects while remote mouse mode is active.",
+            );
             ui.label(RichText::new("Kervesh 0.1 · Native Rust workspace · No telemetry").small().weak());
         });
         self.settings_open = open;
@@ -95,9 +114,9 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(
                 if tab.connected {
-                    Color32::from_rgb(112, 208, 167)
+                    crate::theme::colors::SUCCESS
                 } else {
-                    Color32::GRAY
+                    crate::theme::colors::DISCONNECTED
                 },
                 if tab.connected { "●" } else { "○" },
             );

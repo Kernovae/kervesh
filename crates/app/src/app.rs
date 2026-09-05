@@ -1,5 +1,5 @@
 use anyhow::Result;
-use egui::{Color32, RichText};
+use egui::RichText;
 use kervesh_core::{
     Host, Rates, RemoteCapabilities, Settings, Snapshot, Store,
     secrets::{self, Credentials},
@@ -353,16 +353,32 @@ impl App {
                 egui::Visuals::light()
             };
             if self.settings.dark {
-                visuals.panel_fill = Color32::from_rgb(23, 28, 33);
-                visuals.window_fill = Color32::from_rgb(30, 36, 42);
-                visuals.extreme_bg_color = Color32::from_rgb(17, 21, 25);
+                visuals.panel_fill = crate::theme::colors::CHARCOAL;
+                visuals.window_fill = crate::theme::colors::CHARCOAL;
+                visuals.extreme_bg_color = crate::theme::colors::BLACK;
+                visuals.faint_bg_color = crate::theme::colors::GRAPHITE;
+                visuals.selection.bg_fill = crate::theme::colors::SLATE;
+                visuals.selection.stroke.color = crate::theme::colors::FOREGROUND;
+                visuals.hyperlink_color = crate::theme::colors::FOREGROUND;
+                visuals.widgets.noninteractive.bg_fill = crate::theme::colors::CHARCOAL;
+                visuals.widgets.noninteractive.bg_stroke.color = crate::theme::colors::GRAPHITE;
+                visuals.widgets.inactive.bg_fill = crate::theme::colors::GRAPHITE;
+                visuals.widgets.hovered.bg_fill = crate::theme::colors::SLATE;
+                visuals.widgets.active.bg_fill = crate::theme::colors::SLATE;
+            } else {
+                visuals.panel_fill = crate::theme::colors::LIGHT_PANEL;
+                visuals.window_fill = crate::theme::colors::LIGHT_BG;
+                visuals.extreme_bg_color = crate::theme::colors::WHITE;
+                visuals.selection.bg_fill = crate::theme::colors::LIGHT_BORDER;
+                visuals.selection.stroke.color = crate::theme::colors::LIGHT_FOREGROUND;
+                visuals.hyperlink_color = crate::theme::colors::LIGHT_FOREGROUND;
             }
-            visuals.selection.bg_fill = Color32::from_rgb(40, 94, 79);
-            visuals.selection.stroke.color = Color32::from_rgb(160, 230, 201);
+            visuals.window_corner_radius = egui::CornerRadius::same(7);
+            visuals.menu_corner_radius = egui::CornerRadius::same(6);
             ctx.set_visuals(visuals);
             ctx.style_mut(|style| {
                 style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-                style.spacing.button_padding = egui::vec2(10.0, 5.0);
+                style.spacing.button_padding = egui::vec2(8.0, 4.0);
             });
             self.theme = Some(self.settings.dark);
         }
@@ -370,13 +386,13 @@ impl App {
             .exact_height(48.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(
-                        RichText::new("K / ")
-                            .size(21.0)
-                            .strong()
-                            .color(Color32::from_rgb(112, 208, 167)),
-                    );
-                    ui.label(RichText::new("Kervesh").size(19.0).strong());
+                    let mark_color = if self.settings.dark {
+                        crate::theme::colors::FOREGROUND
+                    } else {
+                        crate::theme::colors::LIGHT_FOREGROUND
+                    };
+                    crate::icons::render_monogram(ui, 20.0, mark_color);
+                    ui.label(RichText::new("Kervesh").size(18.0).strong());
                     ui.label(RichText::new("by Kernovae").small().weak());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Settings").clicked() {
@@ -424,17 +440,24 @@ impl App {
             .show(ctx, |ui| {
                 if self.tabs.is_empty() {
                     ui.vertical_centered(|ui| {
-                        ui.add_space((ui.available_height() * 0.28).max(32.0));
+                        ui.add_space((ui.available_height() * 0.22).max(24.0));
+                        let mark_color = if self.settings.dark {
+                            crate::theme::colors::FOREGROUND
+                        } else {
+                            crate::theme::colors::LIGHT_FOREGROUND
+                        };
+                        crate::icons::render_monogram(ui, 56.0, mark_color);
+                        ui.add_space(12.0);
                         ui.label(
                             RichText::new("Your hosts. Your keys.\nYour machine.")
-                                .size(30.0)
+                                .size(28.0)
                                 .strong(),
                         );
-                        ui.add_space(16.0);
+                        ui.add_space(12.0);
                         ui.label("SSH, files and system health in one native workspace.");
                         ui.add_space(20.0);
                         if ui
-                            .button(RichText::new("+  Add your first host").size(16.0))
+                            .button(RichText::new("+  Add your first host").size(15.0))
                             .clicked()
                         {
                             self.open_new_host();
@@ -452,12 +475,16 @@ impl App {
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 for (i, tab) in self.tabs.iter().enumerate() {
-                                    let label = format!(
-                                        "{}  {}",
-                                        if tab.connected { "●" } else { "○" },
-                                        tab.host.name
+                                    let selected = self.active == i;
+                                    let resp = ui.selectable_label(
+                                        selected,
+                                        format!(
+                                            "{}  {}",
+                                            if tab.connected { "●" } else { "○" },
+                                            tab.host.name
+                                        ),
                                     );
-                                    if ui.selectable_label(self.active == i, label).clicked() {
+                                    if resp.clicked() {
                                         self.active = i;
                                     }
                                     if ui
@@ -501,7 +528,7 @@ impl App {
                     });
                     if let Some(error) = tab.error.clone() {
                         ui.horizontal_wrapped(|ui| {
-                            ui.colored_label(Color32::from_rgb(225, 174, 95), error);
+                            ui.colored_label(crate::theme::colors::WARNING, error);
                             if ui.small_button("Dismiss").clicked() {
                                 tab.error = None;
                             }

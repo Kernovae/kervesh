@@ -4,8 +4,8 @@
 
 Native Rust SSH/SFTP workspace for Windows and Linux. No browser runtime,
 mandatory account, cloud backend, telemetry or installed `ssh` executable.
-Implements the v0.1 workstation scope from the supplied
-[requirements](docs/product-requirements.md).
+Implements the v0.1 workstation scope from the
+[product requirements](docs/product-requirements.md).
 
 ## Run
 
