@@ -9,6 +9,20 @@ struct HostConfig {
     identity_file: Option<String>,
     keepalive: Option<u64>,
     timeout: Option<u64>,
+    proxy_jump: Option<String>,
+    proxy_command: Option<String>,
+    forward_agent: Option<bool>,
+    local_forwards: Vec<String>,
+    remote_forwards: Vec<String>,
+    dynamic_forwards: Vec<u16>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OpenSshImportReport {
+    pub hosts: Vec<Host>,
+    pub unsupported_directives: Vec<(String, String)>,
+    pub proxy_jump_count: usize,
+    pub forwarded_rules_count: usize,
 }
 
 pub fn default_ssh_config_path() -> Option<std::path::PathBuf> {
@@ -16,10 +30,15 @@ pub fn default_ssh_config_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn parse_ssh_config(content: &str) -> Vec<Host> {
+    parse_ssh_config_with_report(content).hosts
+}
+
+pub fn parse_ssh_config_with_report(content: &str) -> OpenSshImportReport {
     let mut defaults = HostConfig::default();
     let mut hosts: Vec<(String, HostConfig)> = Vec::new();
     let mut current_aliases: Vec<String> = Vec::new();
     let mut current_config = HostConfig::default();
+    let mut unsupported = Vec::new();
 
     let flush_current = |aliases: &mut Vec<String>,
                          config: &mut HostConfig,
@@ -49,6 +68,24 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
                 if let Some(t) = config.timeout {
                     defaults.timeout = Some(t);
                 }
+                if let Some(pj) = &config.proxy_jump {
+                    defaults.proxy_jump = Some(pj.clone());
+                }
+                if let Some(pc) = &config.proxy_command {
+                    defaults.proxy_command = Some(pc.clone());
+                }
+                if let Some(fa) = config.forward_agent {
+                    defaults.forward_agent = Some(fa);
+                }
+                defaults
+                    .local_forwards
+                    .extend(config.local_forwards.clone());
+                defaults
+                    .remote_forwards
+                    .extend(config.remote_forwards.clone());
+                defaults
+                    .dynamic_forwards
+                    .extend(config.dynamic_forwards.clone());
             } else {
                 hosts.push((alias, config.clone()));
             }
@@ -62,7 +99,6 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
             continue;
         }
 
-        // Split key and value (supports space or '=' delimiter)
         let (key, value) = if let Some((k, v)) = line.split_once('=') {
             (k.trim(), v.trim())
         } else if let Some((k, v)) = line.split_once(char::is_whitespace) {
@@ -108,7 +144,28 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
                     current_config.timeout = Some(t);
                 }
             }
-            _ => {}
+            "proxyjump" => current_config.proxy_jump = Some(val_clean),
+            "proxycommand" => current_config.proxy_command = Some(val_clean),
+            "forwardagent" => {
+                current_config.forward_agent =
+                    Some(val_clean.eq_ignore_ascii_case("yes") || val_clean == "1");
+            }
+            "localforward" => current_config.local_forwards.push(val_clean),
+            "remoteforward" => current_config.remote_forwards.push(val_clean),
+            "dynamicforward" => {
+                if let Ok(p) = val_clean.parse::<u16>() {
+                    current_config.dynamic_forwards.push(p);
+                }
+            }
+            _ => {
+                let context = current_aliases.join(" ");
+                let host_label = if context.is_empty() {
+                    "global"
+                } else {
+                    &context
+                };
+                unsupported.push((host_label.to_string(), key.to_string()));
+            }
         }
     }
 
@@ -119,10 +176,13 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
         &mut defaults,
     );
 
-    let mut result = Vec::new();
+    let mut result_hosts = Vec::new();
     let home_dir = directories::BaseDirs::new()
         .map(|b| b.home_dir().to_string_lossy().to_string())
         .unwrap_or_else(|| std::env::var("HOME").unwrap_or_default());
+
+    let mut proxy_jump_count = 0;
+    let mut forwarded_rules_count = 0;
 
     for (alias, cfg) in hosts {
         let hostname = cfg
@@ -155,7 +215,30 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
             AuthMethod::Password
         };
 
+        let proxy_jump = cfg.proxy_jump.or(defaults.proxy_jump.clone());
+        if proxy_jump.is_some() {
+            proxy_jump_count += 1;
+        }
+        let proxy_command = cfg.proxy_command.or(defaults.proxy_command.clone());
+        let forward_agent = cfg
+            .forward_agent
+            .or(defaults.forward_agent)
+            .unwrap_or(false);
+
+        let mut local_forwards = defaults.local_forwards.clone();
+        local_forwards.extend(cfg.local_forwards);
+
+        let mut remote_forwards = defaults.remote_forwards.clone();
+        remote_forwards.extend(cfg.remote_forwards);
+
+        let mut dynamic_forwards = defaults.dynamic_forwards.clone();
+        dynamic_forwards.extend(cfg.dynamic_forwards);
+
+        forwarded_rules_count +=
+            local_forwards.len() + remote_forwards.len() + dynamic_forwards.len();
+
         let host = Host {
+            terminal_profile: None,
             id: Uuid::new_v4().to_string(),
             name: alias,
             hostname,
@@ -169,15 +252,29 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
             timeout_secs: cfg.timeout.or(defaults.timeout).unwrap_or(15),
             keepalive_secs: cfg.keepalive.or(defaults.keepalive).unwrap_or(30),
             auto_reconnect: false,
+            jump_host: None,
+            proxy_jump,
+            proxy_command,
+            forward_agent,
+            local_forwards,
+            remote_forwards,
+            dynamic_forwards,
+            thresholds: None,
             last_connected: 0,
+            ..Host::default()
         };
 
         if host.validate().is_ok() {
-            result.push(host);
+            result_hosts.push(host);
         }
     }
 
-    result
+    OpenSshImportReport {
+        hosts: result_hosts,
+        unsupported_directives: unsupported,
+        proxy_jump_count,
+        forwarded_rules_count,
+    }
 }
 
 #[cfg(test)]
@@ -232,5 +329,51 @@ Host bastion
         assert_eq!(bastion.hostname, "bastion.example.com");
         assert_eq!(bastion.username, "devuser");
         assert_eq!(bastion.port, 2222);
+    }
+
+    #[test]
+    fn test_parse_advanced_ssh_config_with_proxy_jump_and_forwards() {
+        let config = r#"
+Host bastion.corp
+    HostName bastion.internal.net
+    User bastion-admin
+    Port 2222
+
+Host internal-db
+    HostName 10.100.0.5
+    User postgres
+    ProxyJump bastion-admin@bastion.corp:2222
+    LocalForward 5432 127.0.0.1:5432
+    RemoteForward 9000 127.0.0.1:9000
+    DynamicForward 1080
+    ForwardAgent yes
+    GSSAPIAuthentication yes
+"#;
+
+        let report = parse_ssh_config_with_report(config);
+        assert_eq!(report.hosts.len(), 2);
+        assert_eq!(report.proxy_jump_count, 1);
+        assert_eq!(report.forwarded_rules_count, 3);
+
+        let db = report
+            .hosts
+            .iter()
+            .find(|h| h.name == "internal-db")
+            .unwrap();
+        assert_eq!(
+            db.proxy_jump.as_deref(),
+            Some("bastion-admin@bastion.corp:2222")
+        );
+        assert!(db.forward_agent);
+        assert_eq!(db.local_forwards, vec!["5432 127.0.0.1:5432"]);
+        assert_eq!(db.remote_forwards, vec!["9000 127.0.0.1:9000"]);
+        assert_eq!(db.dynamic_forwards, vec![1080]);
+
+        assert!(
+            report
+                .unsupported_directives
+                .iter()
+                .any(|(_ctx, dir)| dir.eq_ignore_ascii_case("gssapiauthentication"))
+        );
     }
 }

@@ -1,28 +1,48 @@
-# Portable configuration v1
+# Configuration & Storage Architecture
 
-Exports are UTF-8 JSON objects with `version: 1`, `hosts` and `settings`.
-Unknown properties, unsupported versions, invalid profiles/settings, imports over
-10 MiB and imports above 10,000 hosts are rejected before a transaction commits.
-Imports append profiles with fresh UUIDs and replace preferences atomically.
+Kervesh stores all configurations locally using SQLite with Write-Ahead Logging (WAL) and platform-native credential managers.
+
+---
+
+## 1. Storage Locations & Environment Variables
+
+| Platform | Default Path |
+|---|---|
+| **Linux** | `~/.local/share/kervesh/` (or `$XDG_DATA_HOME/kervesh/`) |
+| **Windows** | `%APPDATA%\Kernovae\Kervesh\` |
+
+### Environment Variables
+- `KERVESH_DATA_DIR`: Overrides the default data directory (useful for portable installations, testing, and isolated environments).
+- `KERVESH_RECORDINGS_DIR`: Overrides the default directory for session recordings (`.cast`, `.txt`, `.raw`).
+
+---
+
+## 2. Portable JSON Export & Import Schema
+
+Configurations can be exported to and imported from portable JSON files. By design, exports never contain raw passwords, private keys, or host trust fingerprints.
 
 ```json
 {
   "version": 1,
-  "hosts": [{
-    "id": "1dc9a749-374d-4898-8bde-e1cbfdd54bfe",
-    "name": "Lab",
-    "hostname": "192.0.2.10",
-    "port": 22,
-    "username": "operator",
-    "auth": "PrivateKey",
-    "key_path": "/home/operator/.ssh/id_ed25519",
-    "group": "Homelab",
-    "tags": "linux, lab",
-    "favorite": true,
-    "timeout_secs": 15,
-    "keepalive_secs": 30,
-    "auto_reconnect": false
-  }],
+  "hosts": [
+    {
+      "id": "1dc9a749-374d-4898-8bde-e1cbfdd54bfe",
+      "name": "Production Web Node",
+      "hostname": "192.0.2.10",
+      "port": 22,
+      "username": "deploy",
+      "auth": "PrivateKey",
+      "key_path": "~/.ssh/id_ed25519",
+      "group": "Production",
+      "tags": "web, frontend, ssl",
+      "favorite": true,
+      "timeout_secs": 15,
+      "keepalive_secs": 30,
+      "auto_reconnect": false,
+      "proxy_jump": "bastion-gateway",
+      "terminal_profile": "development"
+    }
+  ],
   "settings": {
     "dark": true,
     "font_size": 14.0,
@@ -30,21 +50,58 @@ Imports append profiles with fresh UUIDs and replace preferences atomically.
     "monitor_secs": 2,
     "show_hidden": false,
     "sidebar": true,
-    "sftp_panel": true
+    "sftp_panel": true,
+    "default_terminal_profile": "default",
+    "terminal_profiles": []
   }
 }
 ```
 
-Authentication values: `Password`, `PrivateKey`, `Agent`. No password/passphrase
-property exists. Key paths reference files and may need adjustment on another
-machine. Credentials use keyring service `org.kernovae.kervesh` and profile UUID
-as account. Trusted endpoints key on case-normalized hostname plus port, with
-SHA-256 public-key fingerprints. Trust never imports or exports automatically.
+### Import Validation Rules
+- Imports over 10 MiB or exceeding 10,000 host records are rejected before execution.
+- Imported hosts receive fresh UUIDs to prevent collision with existing hosts.
+- Corrupted schemas or invalid port numbers cause atomic transaction rollback.
 
-Timeout 1–300 seconds; keepalive 0–3600 seconds (0 disables); font 8–32 points;
-scrollback 0–100,000 lines; monitoring 1–300 seconds. Existing sessions retain
-initial scrollback/polling interval until reconnected. All metrics currently
-share the configured interval. Configuration writes use SQLite transactions.
+---
 
-Remote listing timestamps are Unix seconds. SFTP paths always use `/`, independent
-of the client operating system. New/renamed names must be one path component.
+## 3. Terminal Profiles Schema
+
+Terminal settings are organized into customizable profiles:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | String | Unique profile identifier (e.g. `default`, `dev`, `server-admin`). |
+| `name` | String | User-facing profile label. |
+| `font_family` | String | Font family name (e.g. `Hack`) or absolute TTF/OTF path. |
+| `font_fallbacks` | Array | Up to 8 ordered fallback font paths. |
+| `font_size` | Float | Terminal font size (8.0 to 32.0 pt). |
+| `line_height` | Float | Line height multiplier (1.0 to 2.0). |
+| `padding` | Float | Monospace grid inner padding (0.0 to 32.0 pt). |
+| `cursor_style` | Enum | `Block`, `Beam`, or `Underline`. |
+| `cursor_blink` | Boolean | Enables or disables cursor blinking animation. |
+| `scrollback` | Integer | Scrollback buffer capacity in lines (up to 100,000). |
+| `clipboard_profile` | Enum | `Desktop` (Smart Ctrl+C/V) or `Traditional` (Literal control bytes). |
+| `multiline_paste_policy` | Enum | `Off`, `Warn`, or `AlwaysPreview`. |
+| `palette` | Object | Full ANSI 16-color palette + background/foreground/cursor/selection. |
+| `bell_visual` | Boolean | Flashes terminal screen on ASCII 0x07 bell. |
+| `bell_audio` | Boolean | Emits system alert sound on ASCII 0x07 bell. |
+| `hyperlinks_enabled` | Boolean | Enables OSC 8 and URL auto-detection. |
+
+---
+
+## 4. Key Bindings & Shortcuts
+
+| Shortcut | Action | Scope |
+|---|---|---|
+| `Ctrl+N` | Open New Connection Dialog | Global |
+| `Ctrl+W` | Close Active Tab / Session | Global |
+| `Ctrl+Tab` | Next Session Tab | Global |
+| `Ctrl+Shift+Tab` | Previous Session Tab | Global |
+| `Ctrl+Shift+D` | Split Pane Vertically | Terminal Workspace |
+| `Ctrl+Shift+E` | Split Pane Horizontally | Terminal Workspace |
+| `Ctrl+F` | Open In-Terminal Search Bar | Terminal |
+| `Ctrl+Shift+C` | Copy Selection to System Clipboard | Terminal |
+| `Ctrl+Shift+V` | Paste from System Clipboard | Terminal |
+| `Shift+PageUp` | Scroll Up Scrollback Buffer | Terminal |
+| `Shift+PageDown` | Scroll Down Scrollback Buffer | Terminal |
+| `Ctrl+Click` | Open Hyperlink or Reveal SFTP Path | Terminal |

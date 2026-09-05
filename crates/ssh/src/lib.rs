@@ -1,15 +1,31 @@
+pub mod automation_runner;
+pub mod ftp;
+pub mod rdp_vnc;
 mod remote;
+pub mod serial;
 mod session;
 mod sftp;
+pub mod sync_engine;
+pub mod telnet;
 mod transfer;
+pub mod tunnel;
+pub mod x11;
+pub use automation_runner::*;
+pub use ftp::*;
 use kervesh_core::{Rates, RemoteCapabilities, Snapshot};
+pub use rdp_vnc::*;
 pub use remote::*;
+pub use serial::*;
 pub use session::*;
 pub use sftp::*;
 use std::{path::PathBuf, sync::Arc};
+pub use sync_engine::*;
+pub use telnet::*;
 use tokio::sync::{mpsc, oneshot};
 pub use tokio_util::sync::CancellationToken;
 pub use transfer::*;
+pub use tunnel::*;
+pub use x11::*;
 
 pub enum Event {
     Trust {
@@ -39,6 +55,34 @@ pub enum Event {
         path: String,
         content: String,
     },
+    Processes(Vec<kervesh_core::ProcessInfo>),
+    ProcessSignalled {
+        pid: u32,
+        signal: kervesh_core::Signal,
+        success: bool,
+        error: Option<String>,
+    },
+    MacroStatus {
+        id: String,
+        step_index: usize,
+        total_steps: usize,
+        done: bool,
+        error: Option<String>,
+    },
+    SearchResults(Vec<kervesh_core::SearchResult>),
+    SyncPlanReady(kervesh_core::SyncPlan),
+    DockerContainers(Vec<kervesh_core::DockerContainer>),
+    DockerImages(Vec<kervesh_core::DockerImage>),
+    DockerLogs {
+        id: String,
+        logs: String,
+    },
+    SystemdUnits(Vec<kervesh_core::SystemdUnit>),
+    SystemdLogs {
+        unit: String,
+        logs: String,
+    },
+    NetDiagResult(kervesh_core::NetDiagResult),
     OperationComplete,
 }
 #[derive(Clone, Debug, PartialEq)]

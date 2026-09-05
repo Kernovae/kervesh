@@ -12,9 +12,14 @@ license = "MIT"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "fs", "process"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+regex = "1.11"
+ring = "0.17"
+ssh-key = { version = "0.7.0-rc.11", features = ["ed25519", "rsa", "encryption", "std", "alloc", "getrandom"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 egui = "0.33.3"
 kervesh-core = { path = "crates/core" }
 kervesh-terminal = { path = "crates/terminal" }

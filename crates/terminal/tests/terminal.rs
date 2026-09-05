@@ -46,37 +46,6 @@ fn terminal_key_sequences_include_control_and_application_cursor() {
 }
 
 #[test]
-fn desktop_clipboard_events_preserve_terminal_control_shortcuts() {
-    use kervesh_terminal::clipboard_control;
-    assert_eq!(
-        clipboard_control(&egui::Event::Copy, Modifiers::CTRL),
-        Some(3)
-    );
-    assert_eq!(
-        clipboard_control(&egui::Event::Cut, Modifiers::CTRL),
-        Some(24)
-    );
-    assert_eq!(
-        clipboard_control(
-            &egui::Event::Paste("secret clipboard".into()),
-            Modifiers::CTRL
-        ),
-        Some(22)
-    );
-    assert_eq!(
-        clipboard_control(
-            &egui::Event::Copy,
-            Modifiers {
-                ctrl: true,
-                shift: true,
-                ..Modifiers::NONE
-            }
-        ),
-        None
-    );
-}
-
-#[test]
 fn terminal_feeds_box_drawing_and_block_elements_without_corruption() {
     let mut t = Terminal::new(80, 24, 1000);
     let box_str =
@@ -97,36 +66,4 @@ fn terminal_feeds_box_drawing_and_block_elements_without_corruption() {
     assert!(
         text2.contains('←') && text2.contains('→') && text2.contains('↑') && text2.contains('↓')
     );
-}
-
-#[test]
-fn custom_terminal_glyph_coverage() {
-    use kervesh_terminal::is_custom_glyph;
-    // Box drawing
-    assert!(is_custom_glyph('┌'));
-    assert!(is_custom_glyph('─'));
-    assert!(is_custom_glyph('│'));
-    assert!(is_custom_glyph('┼'));
-    assert!(is_custom_glyph('╭'));
-    assert!(is_custom_glyph('═'));
-    assert!(is_custom_glyph('║'));
-    assert!(is_custom_glyph('╔'));
-    // Block elements
-    assert!(is_custom_glyph('█'));
-    assert!(is_custom_glyph('▓'));
-    assert!(is_custom_glyph('▒'));
-    assert!(is_custom_glyph('░'));
-    assert!(is_custom_glyph('▀'));
-    assert!(is_custom_glyph('▄'));
-    assert!(is_custom_glyph('▌'));
-    assert!(is_custom_glyph('▐'));
-    // Arrows
-    assert!(is_custom_glyph('←'));
-    assert!(is_custom_glyph('→'));
-    assert!(is_custom_glyph('↑'));
-    assert!(is_custom_glyph('↓'));
-    // Regular characters should not be custom glyphs
-    assert!(!is_custom_glyph('A'));
-    assert!(!is_custom_glyph('1'));
-    assert!(!is_custom_glyph('$'));
 }

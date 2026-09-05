@@ -1,6 +1,7 @@
 use egui::{Key, Modifiers};
 
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let text = text.replace("\r\n", "\n").replace(char::from(13), "\n");
     if bracketed {
         format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
     } else {
@@ -100,17 +101,4 @@ pub fn encode_key(key: Key, modifiers: Modifiers, application: bool) -> Option<V
     }
     bytes.extend_from_slice(s.as_bytes());
     Some(bytes)
-}
-
-/// Winit consumes these keys before emitting a Key event. Preserve terminal control bytes.
-pub fn clipboard_control(event: &egui::Event, modifiers: Modifiers) -> Option<u8> {
-    if !modifiers.ctrl || modifiers.shift {
-        return None;
-    }
-    match event {
-        egui::Event::Copy => Some(3),
-        egui::Event::Cut => Some(24),
-        egui::Event::Paste(_) => Some(22),
-        _ => None,
-    }
 }

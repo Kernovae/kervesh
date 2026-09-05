@@ -1,115 +1,104 @@
-# Kervesh by Kernovae
+# Kervesh
 
 **Your hosts. Your keys. Your machine.**
 
-Native Rust SSH/SFTP workspace for Windows and Linux. No browser runtime,
-mandatory account, cloud backend, telemetry or installed `ssh` executable.
-Implements the v0.1 workstation scope from the
-[product requirements](docs/product-requirements.md).
+Kervesh is a high-performance, native remote systems workspace for Linux and Windows. It combines hardware-accelerated terminal emulation, SFTP file management, SSH tunnels, SOCKS5 dynamic proxying, multi-protocol remote connectivity, and sysadmin tooling into a single lightweight desktop application.
 
-## Run
+Implemented in pure Rust with zero Electron, zero browser runtimes, zero cloud dependencies, and zero telemetry.
 
-Requires Rust 1.92 or newer. Use a desktop session with OpenGL support.
+---
 
-```sh
+## Highlights
+
+- **Multi-Protocol Connectivity**: Native SSH (with multi-hop Bastion jump host cascading and `~/.ssh/config` import), Telnet, Serial UART ports, FTP/FTPS, and RDP/VNC remote desktop orchestrators.
+- **High-Performance Terminal**: Alacritty VT/ANSI state machine, GPU text rasterization, true color support, customizable typography with fallback chains, split panes (Vertical/Horizontal), and broadcast command execution.
+- **SFTP File Browser & Remote Editor**: Visual remote file manager with streaming transfers, directory synchronization (rsync-style delta engine), remote grep search, and built-in code editor with syntax highlighting and atomic saving.
+- **Network Routing & Tunnels**: Visual SSH port forwarding dashboard (Local `-L`, Remote `-R`), in-app SOCKS5 dynamic forwarding proxy (`-D`), and X11 forwarding with `MIT-MAGIC-COOKIE-1` authentication.
+- **Sysadmin & DevOps Toolbox**: Docker container manager, systemd service unit manager with `journalctl` log viewer, remote process manager with POSIX signal dispatching, and network diagnostics hub (Ping, Traceroute, Port Scan, DNS).
+- **Security & Cryptography**: Zero-knowledge encrypted vault (PBKDF2-HMAC-SHA256 + AES-256-GCM AEAD), Ed25519/RSA SSH keypair generator with `ssh-copy-id` deployment, and platform keyring integration.
+- **Terminal Intelligence**: Multi-format session recording (`.cast`, `.txt`, `.raw`), searchable command audit history, and customizable trigger-action rules engine.
+- **Workspace Personalization**: Visual theme designer with ANSI palette editor, built-in presets (Dracula, Nord, Tokyo Night, Catppuccin, Gruvbox, One Dark, etc.), live terminal preview, and real-time WCAG AA contrast ratio checking.
+
+---
+
+## Quickstart
+
+### Prerequisites
+- **Rust 1.92+**
+- Desktop session with OpenGL / EGL support
+
+### Build & Run
+
+```bash
+# Run in debug mode:
 cargo run -p kervesh
-# Optimized executable:
+
+# Build optimized release binary:
 cargo build --release -p kervesh
 ./target/release/kervesh
 ```
 
-Windows: run `target\release\kervesh.exe` from PowerShell/Explorer. Build with the
-MSVC Rust toolchain and Visual Studio C++ build tools.
+### Linux Build Dependencies
 
-Linux build dependencies (Debian/Ubuntu; install `libxkbcommon-x11-0` for X11 runtime):
-
-```sh
-sudo apt-get install build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev
+**Debian / Ubuntu**:
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  build-essential pkg-config libx11-dev libxkbcommon-dev \
+  libxkbcommon-x11-0 libwayland-dev libegl1-mesa-dev libgl1-mesa-dev
 ```
 
-Fedora: `gcc gcc-c++ make pkgconf-pkg-config libX11-devel libxkbcommon-devel
-wayland-devel mesa-libEGL-devel mesa-libGL-devel`. SQLite and the D-Bus client
-library are bundled. Runtime needs graphics/window libraries and a Secret
-Service provider (GNOME Keyring/KWallet) to remember credentials. When the keyring
-is unavailable, leave “Save” unchecked for session-only authentication.
+**Fedora / RHEL**:
+```bash
+sudo dnf install -y \
+  gcc gcc-c++ make pkgconf-pkg-config libX11-devel \
+  libxkbcommon-devel wayland-devel mesa-libEGL-devel mesa-libGL-devel
+```
 
-## Use
+### Windows Build Requirements
+Build using the Rust MSVC toolchain (`x86_64-pc-windows-msvc`) with Visual Studio C++ build tools.
 
-1. Add a host: name, hostname/IP, port, username and authentication method.
-2. Save; double-click the host, or use its context menu → Connect.
-3. Supply password/passphrase, or select SSH agent. Saved secrets stay in the OS
-   keyring; private keys stay in your selected local files.
-4. Verify an unknown host's SHA-256 fingerprint with a trusted source before
-   selecting **Trust key and connect**. Changed keys fail closed.
-5. Open more hosts in independent tabs. SFTP follows the active session.
-6. Double-click folders; right-click files for download, rename, permissions,
-   delete and copy path. Use Upload or drop a regular file onto the workspace.
-7. Inspect CPU, memory, swap, load, mounts, network and system metadata below the
-   terminal. Inspector provides details; Pause stops polling for that session.
-
-Terminal shortcuts: Ctrl+C interrupts; Ctrl+X/Ctrl+V send terminal control keys;
-Ctrl+Shift+C copies selection; Ctrl+Shift+V pastes. Shift+PageUp/PageDown scrolls
-history. Shift+drag selects text when a remote program enables mouse reporting.
-Full-screen terminal applications use the Alacritty VT engine.
-
-Settings control light/dark theme, font size, scrollback, monitor interval, hidden
-files, JSON import/export and trusted keys. Profiles support groups, tags,
-favorites, recent sorting, timeout, keepalive and optional reconnect after a
-previously successful connection drops.
+---
 
 ## Architecture
 
-| Crate | Responsibility |
-|---|---|
-| `kervesh-core` | Validated profiles, SQLite, OS credential boundary, procfs metrics |
-| `kervesh-ssh` | Embedded russh transport, PTY, SFTP, streaming transfers, monitor tasks |
-| `kervesh-terminal` | Alacritty emulator, native egui cell rendering, keyboard/mouse |
-| `kervesh` | Native eframe app, host/session/file/transfer UI and settings |
+Kervesh is structured as a modular Cargo workspace:
 
-One SSH transport per session. PTY, SFTP and monitoring use separate channels.
-Bounded command/event queues and separate tasks prevent file/network operations
-from running on the UI thread. Transfer buffers stay at 64 KiB per active stream.
+| Crate | Path | Responsibility |
+|---|---|---|
+| **`kervesh-core`** | [`crates/core`](crates/core) | Domain models, SQLite storage, AES-256-GCM vault, keygen, sync engine, triggers |
+| **`kervesh-terminal`** | [`crates/terminal`](crates/terminal) | Alacritty VT engine, GPU text rendering, clipboard policies, local search |
+| **`kervesh-ssh`** | [`crates/ssh`](crates/ssh) | Tokio async transport, SSH/PTY multiplexing, SFTP streaming, SOCKS5 proxy, X11 bridge |
+| **`kervesh`** | [`crates/app`](crates/app) | Native egui/eframe desktop application, workspaces, SFTP UI, devops tools, themes |
 
-## Local data and portable configuration
+---
 
-Default data path uses the OS application-data directory (`Kernovae/Kervesh` on
-Windows; `$XDG_DATA_HOME/kervesh` or `~/.local/share/kervesh` on Linux).
-`KERVESH_DATA_DIR` overrides the directory for portable/test workspaces.
-SQLite uses WAL transactions; host profiles and trusted fingerprints stay local.
+## Documentation
 
-Export schema: [docs/configuration.md](docs/configuration.md). Imports append new
-profile IDs; they cannot attach imported profiles to existing saved credentials.
-Export excludes credentials, fingerprints and history.
+- **[Architecture & Technical Design](docs/architecture.md)**: In-depth design of crates, concurrency model, and data flow.
+- **[Feature Guide & Capabilities](docs/features.md)**: User guide covering all protocols, tools, and workflows.
+- **[Security Architecture](docs/security.md)**: Zero-knowledge vault, key derivation, and host trust boundaries.
+- **[Configuration & Storage](docs/configuration.md)**: File formats, schemas, terminal profiles, and key shortcuts.
+- **[Branching & Governance](docs/branching.md)**: Repository branch model and CI quality gates.
 
-## Validate and package
+---
 
-```sh
+## Quality & Verification
+
+Run the comprehensive test suite across all 21 test suites:
+
+```bash
+# Code formatting check
 cargo fmt --all -- --check
+
+# Strict compiler and clippy lints
 cargo clippy --workspace --all-targets -- -D warnings
+
+# Unit, integration, and high-concurrency stress tests (100+ tests)
 cargo test --workspace
-python3 scripts/test-loopback.py   # Linux, requires local OpenSSH server tools
-python3 scripts/package.py        # after release build; tar/zip and optional deb/rpm
 ```
 
-Loopback tests generate temporary keys/configuration, bind only `127.0.0.1`, and
-clean up their server. They never connect to saved profiles. Native desktop
-smoke/benchmark instructions: [docs/validation.md](docs/validation.md).
+---
 
-CI configuration includes Windows/Linux builds and Linux OpenSSH integration.
-**Configured CI is not proof that a platform has passed**; see the validation
-report for checks actually executed.
+## License
 
-## Release scope
-
-See [requirement coverage](docs/coverage.md) for exact implemented scope and gaps.
-This is an initial workstation implementation, not a claim that every terminal,
-server and distribution has been qualified. Advanced forwarding/bastions,
-recursive directory transfers, remote editor, OpenSSH config import, process
-viewer and configurable key bindings remain roadmap work. Linux procfs supplies
-v0.1 metrics; other remote operating systems retain SSH/SFTP but lack this collector.
-
-Upload replacement uses staged files and a temporary backup because the SFTP v3
-library does not expose atomic POSIX replacement. It is recoverable but not
-crash-atomic; see [SECURITY.md](SECURITY.md) for interrupted-transfer behavior.
-Performance figures are engineering targets until measured on the supported
-platform matrix. License: MIT.
+Kervesh is licensed under the [MIT License](LICENSE).

@@ -18,6 +18,32 @@ pub enum Command {
     File(FileOperation),
     Transfer(TransferRequest),
     PauseMonitor(bool),
+    ProcessList,
+    SignalProcess(u32, kervesh_core::Signal),
+    RunMacro(kervesh_core::AutomationMacro),
+    SearchFiles(kervesh_core::SearchQuery),
+    ComputeSyncPlan {
+        local_dir: std::path::PathBuf,
+        remote_dir: String,
+        direction: kervesh_core::SyncDirection,
+        policy: kervesh_core::SyncConflictPolicy,
+    },
+    ExecuteSync {
+        plan: kervesh_core::SyncPlan,
+        transfer_id: u64,
+        cancel: tokio_util::sync::CancellationToken,
+    },
+    DockerList,
+    DockerAction(String, kervesh_core::DockerAction),
+    DockerLogs(String),
+    SystemdList,
+    SystemdAction(String, kervesh_core::SystemdAction),
+    SystemdLogs(String),
+    NetDiag {
+        tool: kervesh_core::NetDiagTool,
+        target: String,
+        port_or_type: Option<String>,
+    },
     Close,
 }
 pub struct Session {
@@ -73,6 +99,69 @@ async fn run(
     mut commands: mpsc::Receiver<Command>,
     events: EventSink,
 ) -> Result<()> {
+    if host.protocol == kervesh_core::ProtocolKind::Telnet {
+        let cfg = host.telnet_config.unwrap_or(kervesh_core::TelnetConfig {
+            host: host.hostname.clone(),
+            port: host.port,
+            terminal_type: "xterm-256color".into(),
+            naws: true,
+        });
+        let (input_tx, input_rx) = mpsc::channel(256);
+        let (output_tx, mut output_rx) = mpsc::channel(256);
+        let (resize_tx, resize_rx) = mpsc::channel(64);
+        events.send(Event::Connected).await;
+        let telnet_task = tokio::spawn(crate::telnet::run_telnet_session(
+            cfg, input_rx, output_tx, resize_rx,
+        ));
+        let out_events = events.clone();
+        let out_task = tokio::spawn(async move {
+            while let Some(bytes) = output_rx.recv().await {
+                out_events.send(Event::Output(bytes)).await;
+            }
+        });
+        while let Some(cmd) = commands.recv().await {
+            match cmd {
+                Command::Input(b) => {
+                    let _ = input_tx.send(b).await;
+                }
+                Command::Resize(c, r) => {
+                    let _ = resize_tx.send((c as u16, r as u16)).await;
+                }
+                Command::Close => break,
+                _ => {}
+            }
+        }
+        telnet_task.abort();
+        out_task.abort();
+        return Ok(());
+    }
+
+    if host.protocol == kervesh_core::ProtocolKind::Serial {
+        let cfg = host.serial_config.unwrap_or_default();
+        let (input_tx, input_rx) = mpsc::channel(256);
+        let (output_tx, mut output_rx) = mpsc::channel(256);
+        events.send(Event::Connected).await;
+        let serial_task = tokio::spawn(crate::serial::run_serial_session(cfg, input_rx, output_tx));
+        let out_events = events.clone();
+        let out_task = tokio::spawn(async move {
+            while let Some(bytes) = output_rx.recv().await {
+                out_events.send(Event::Output(bytes)).await;
+            }
+        });
+        while let Some(cmd) = commands.recv().await {
+            match cmd {
+                Command::Input(b) => {
+                    let _ = input_tx.send(b).await;
+                }
+                Command::Close => break,
+                _ => {}
+            }
+        }
+        serial_task.abort();
+        out_task.abort();
+        return Ok(());
+    }
+
     let remote = Remote::connect(&host, &credentials, store, events.clone()).await?;
     drop(credentials);
     let mut shell = remote.shell(100, 30).await?;
@@ -229,6 +318,7 @@ async fn run(
             }
         }
     });
+    let output_tracker = Arc::new(tokio::sync::RwLock::new(String::new()));
     let _children = Children(vec![monitor, files, input]);
     loop {
         tokio::select! {
@@ -238,10 +328,210 @@ async fn run(
                 Some(Command::PauseMonitor(value))=>paused.store(value,Ordering::Relaxed),
                 Some(Command::File(op))=>if files_tx.try_send(op).is_err(){events.send(Event::Error("SFTP unavailable or queue full".into())).await;},
                 Some(Command::Transfer(request))=>if let Err(e)=transfer_tx.try_send(request){events.send(Event::Transfer {id:e.into_inner().id,done:0,total:0,speed:0.0,state:TransferState::Failed("Transfer queue unavailable or full".into())}).await;},
+                Some(Command::ProcessList) => {
+                    let proc_remote = remote.clone();
+                    let proc_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = "ps -eo pid,ppid,user,%cpu,%mem,stat,time,command --sort=-%cpu 2>/dev/null || ps -eo pid,ppid,user,%cpu,%mem,stat,time,args 2>/dev/null || ps aux";
+                        match proc_remote.exec(cmd).await {
+                            Ok(output) => {
+                                let procs = kervesh_core::ProcessInfo::parse_ps_output(&output);
+                                proc_events.send(Event::Processes(procs)).await;
+                            }
+                            Err(e) => {
+                                proc_events.send(Event::Error(format!("Process inspect failed: {e:#}"))).await;
+                            }
+                        }
+                    });
+                }
+                Some(Command::SignalProcess(pid, signal)) => {
+                    let sig_remote = remote.clone();
+                    let sig_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = format!("kill -{} {}", signal.number(), pid);
+                        match sig_remote.exec(&cmd).await {
+                            Ok(_) => {
+                                sig_events.send(Event::ProcessSignalled {
+                                    pid,
+                                    signal,
+                                    success: true,
+                                    error: None,
+                                }).await;
+                            }
+                            Err(e) => {
+                                sig_events.send(Event::ProcessSignalled {
+                                    pid,
+                                    signal,
+                                    success: false,
+                                    error: Some(format!("{e:#}")),
+                                }).await;
+                            }
+                        }
+                    });
+                }
+                Some(Command::RunMacro(mac)) => {
+                    let mac_tx = input_tx.clone();
+                    let mac_tracker = output_tracker.clone();
+                    let mac_events = events.clone();
+                    tokio::spawn(async move {
+                        let _ = crate::automation_runner::execute_macro(mac, mac_tx, mac_tracker, mac_events).await;
+                    });
+                }
+                Some(Command::SearchFiles(query)) => {
+                    let search_remote = remote.clone();
+                    let search_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = query.to_grep_command();
+                        match search_remote.exec(&cmd).await {
+                            Ok(output) => {
+                                let results = kervesh_core::SearchResult::parse_grep_output(&output);
+                                search_events.send(Event::SearchResults(results)).await;
+                            }
+                            Err(e) => {
+                                search_events.send(Event::Error(format!("Search failed: {e:#}"))).await;
+                            }
+                        }
+                    });
+                }
+                Some(Command::ComputeSyncPlan { local_dir, remote_dir, direction, policy }) => {
+                    let sync_remote = remote.clone();
+                    let sync_events = events.clone();
+                    tokio::spawn(async move {
+                        let sftp = match sync_remote.sftp().await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                sync_events.send(Event::Error(format!("SFTP setup for sync failed: {e:#}"))).await;
+                                return;
+                            }
+                        };
+                        let local_entries = crate::sync_engine::walk_local_tree(&local_dir).await.unwrap_or_default();
+                        let remote_entries = crate::sync_engine::walk_remote_tree(&sftp, &remote_dir).await.unwrap_or_default();
+                        let plan = kervesh_core::SyncPlan::compute(local_dir, remote_dir, direction, policy, &local_entries, &remote_entries);
+                        sync_events.send(Event::SyncPlanReady(plan)).await;
+                    });
+                }
+                Some(Command::ExecuteSync { plan, transfer_id, cancel }) => {
+                    let exec_remote = remote.clone();
+                    let exec_events = events.clone();
+                    tokio::spawn(async move {
+                        let sftp = match exec_remote.sftp().await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                exec_events.send(Event::Error(format!("SFTP for sync execution failed: {e:#}"))).await;
+                                return;
+                            }
+                        };
+                        let _ = crate::sync_engine::execute_sync(sftp, plan, transfer_id, exec_events, cancel).await;
+                    });
+                }
+                Some(Command::DockerList) => {
+                    let d_remote = remote.clone();
+                    let d_events = events.clone();
+                    tokio::spawn(async move {
+                        if let Ok(out) = d_remote.exec("docker ps -a --format '{{json .}}' 2>/dev/null").await {
+                            let containers = kervesh_core::DockerContainer::parse_json_lines(&out);
+                            d_events.send(Event::DockerContainers(containers)).await;
+                        }
+                        if let Ok(out) = d_remote.exec("docker images --format '{{json .}}' 2>/dev/null").await {
+                            let images = kervesh_core::DockerImage::parse_json_lines(&out);
+                            d_events.send(Event::DockerImages(images)).await;
+                        }
+                    });
+                }
+                Some(Command::DockerAction(id, act)) => {
+                    let d_remote = remote.clone();
+                    let d_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = format!("docker {} {} 2>&1", act.as_str(), id);
+                        let _ = d_remote.exec(&cmd).await;
+                        if let Ok(out) = d_remote.exec("docker ps -a --format '{{json .}}' 2>/dev/null").await {
+                            let containers = kervesh_core::DockerContainer::parse_json_lines(&out);
+                            d_events.send(Event::DockerContainers(containers)).await;
+                        }
+                    });
+                }
+                Some(Command::DockerLogs(id)) => {
+                    let d_remote = remote.clone();
+                    let d_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = format!("docker logs --tail 200 {} 2>&1", id);
+                        let logs = d_remote.exec(&cmd).await.unwrap_or_else(|e| format!("Failed to fetch logs: {e:#}"));
+                        d_events.send(Event::DockerLogs { id, logs }).await;
+                    });
+                }
+                Some(Command::SystemdList) => {
+                    let s_remote = remote.clone();
+                    let s_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = "systemctl list-units --type=service --all --no-pager --plain 2>/dev/null";
+                        if let Ok(out) = s_remote.exec(cmd).await {
+                            let units = kervesh_core::SystemdUnit::parse_list_units(&out);
+                            s_events.send(Event::SystemdUnits(units)).await;
+                        }
+                    });
+                }
+                Some(Command::SystemdAction(unit, act)) => {
+                    let s_remote = remote.clone();
+                    let s_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = format!("systemctl {} {} 2>&1", act.as_str(), unit);
+                        let _ = s_remote.exec(&cmd).await;
+                        let list_cmd = "systemctl list-units --type=service --all --no-pager --plain 2>/dev/null";
+                        if let Ok(out) = s_remote.exec(list_cmd).await {
+                            let units = kervesh_core::SystemdUnit::parse_list_units(&out);
+                            s_events.send(Event::SystemdUnits(units)).await;
+                        }
+                    });
+                }
+                Some(Command::SystemdLogs(unit)) => {
+                    let s_remote = remote.clone();
+                    let s_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = format!("journalctl -u {} -n 200 --no-pager 2>&1", unit);
+                        let logs = s_remote.exec(&cmd).await.unwrap_or_else(|e| format!("Failed to fetch journal: {e:#}"));
+                        s_events.send(Event::SystemdLogs { unit, logs }).await;
+                    });
+                }
+                Some(Command::NetDiag { tool, target, port_or_type }) => {
+                    let n_remote = remote.clone();
+                    let n_events = events.clone();
+                    tokio::spawn(async move {
+                        let cmd = tool.build_command(&target, port_or_type.as_deref());
+                        match n_remote.exec(&cmd).await {
+                            Ok(raw_output) => {
+                                n_events.send(Event::NetDiagResult(kervesh_core::NetDiagResult {
+                                    tool,
+                                    target,
+                                    raw_output,
+                                    success: true,
+                                })).await;
+                            }
+                            Err(e) => {
+                                n_events.send(Event::NetDiagResult(kervesh_core::NetDiagResult {
+                                    tool,
+                                    target,
+                                    raw_output: format!("Execution failed: {e:#}"),
+                                    success: false,
+                                })).await;
+                            }
+                        }
+                    });
+                }
                 Some(Command::Close)|None=>break,
             },
             message=shell.wait()=>match message {
-                Some(russh::ChannelMsg::Data {data})|Some(russh::ChannelMsg::ExtendedData {data,..})=>events.send(Event::Output(data.to_vec())).await,
+                Some(russh::ChannelMsg::Data {data})|Some(russh::ChannelMsg::ExtendedData {data,..})=> {
+                    {
+                        let mut tracker = output_tracker.write().await;
+                        let text = String::from_utf8_lossy(&data);
+                        tracker.push_str(&text);
+                        if tracker.len() > 16384 {
+                            let drain_amt = tracker.len() - 8192;
+                            tracker.drain(..drain_amt);
+                        }
+                    }
+                    events.send(Event::Output(data.to_vec())).await;
+                }
                 Some(russh::ChannelMsg::Eof)|Some(russh::ChannelMsg::Close)|None=>break,
                 _=>{}
             }

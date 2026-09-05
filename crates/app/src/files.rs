@@ -41,6 +41,8 @@ impl App {
         let mut deletion = None;
         let mut upload = false;
         let mut download = None;
+        let mut open_search = false;
+        let mut open_sync = false;
 
         egui::SidePanel::right("files")
             .default_width(320.0)
@@ -52,6 +54,27 @@ impl App {
                 let id = tab.id;
                 let dark = self.settings.dark;
 
+                if tab.terminal.profile().follow_terminal_directory {
+                    if tab.follow_suspended {
+                        if ui
+                            .small_button("Resume following terminal directory")
+                            .clicked()
+                        {
+                            tab.follow_suspended = false;
+                            tab.last_followed = None;
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new(if tab.terminal.directory().is_some() {
+                                "Following terminal directory"
+                            } else {
+                                "Waiting for terminal directory metadata"
+                            })
+                            .small()
+                            .weak(),
+                        );
+                    }
+                }
                 // Tab Header: SFTP / File Browser / Bookmarks
                 ui.horizontal(|ui| {
                     let _ = ui.selectable_label(true, "SFTP");
@@ -103,6 +126,15 @@ impl App {
                                 name: String::new(),
                                 error: None,
                             });
+                        }
+                        if ui_icon_button(ui, UiIcon::Search, "Search files (Grep)", dark).clicked()
+                        {
+                            open_search = true;
+                        }
+                        if ui_icon_button(ui, UiIcon::Transfer, "Directory synchronization…", dark)
+                            .clicked()
+                        {
+                            open_sync = true;
                         }
                     });
 
@@ -457,6 +489,11 @@ impl App {
             });
 
         if let Some((id, operation)) = operation {
+            if matches!(operation, FileOperation::List(_))
+                && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
+            {
+                tab.follow_suspended = true;
+            }
             if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
                 tab.busy = true;
             }
@@ -478,6 +515,12 @@ impl App {
             && let Some(local) = rfd::FileDialog::new().set_file_name(name).save_file()
         {
             self.prepare_download(id, remote, local);
+        }
+        if open_search && let Some(tab) = self.tabs.get(self.active) {
+            self.search_ui.open_for_path(tab.path.clone());
+        }
+        if open_sync && let Some(tab) = self.tabs.get(self.active) {
+            self.sync_ui.open_for_remote(tab.path.clone());
         }
     }
 
@@ -556,51 +599,183 @@ impl App {
         let mut save = false;
         let tab_id = tab.id;
         let title = format!(
-            "Edit — {}{}",
+            "Edit — {} ({}){}",
             editor.name,
+            editor.syntax.as_str(),
             if editor.dirty { " *" } else { "" }
         );
 
+        let dark = self.settings.dark;
+        let mut save_as_path: Option<String> = None;
+
         egui::Window::new(title)
             .open(&mut open)
-            .default_width(700.0)
-            .default_height(500.0)
+            .default_width(760.0)
+            .default_height(540.0)
             .resizable(true)
             .vscroll(false)
             .show(ctx, |ui| {
+                // Top control bar
                 ui.horizontal(|ui| {
                     ui.monospace(&editor.path);
+                    ui.separator();
+
                     if editor.saving {
                         ui.spinner();
                         ui.label("Saving…");
-                    } else if ui.button("Save").clicked() {
-                        save = true;
+                    } else {
+                        if ui.button("💾 Save").clicked()
+                            || (ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)))
+                        {
+                            save = true;
+                        }
+                        if ui.button("Save As…").clicked() {
+                            editor.save_as_open = !editor.save_as_open;
+                        }
                     }
+
+                    if ui.button("🔍 Find/Replace").clicked() {
+                        editor.search_open = !editor.search_open;
+                    }
+
+                    // Line endings switch
+                    let ending_label = editor.line_ending.as_str();
+                    egui::ComboBox::from_id_salt("editor_line_ending")
+                        .selected_text(ending_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut editor.line_ending,
+                                crate::editor::LineEnding::Lf,
+                                "LF (Unix)",
+                            );
+                            ui.selectable_value(
+                                &mut editor.line_ending,
+                                crate::editor::LineEnding::Crlf,
+                                "CRLF (Windows)",
+                            );
+                        });
+
+                    ui.label(
+                        RichText::new(format!(
+                            "{} lines, {} bytes",
+                            editor.line_count(),
+                            editor.content.len()
+                        ))
+                        .weak()
+                        .small(),
+                    );
+
                     if editor.dirty {
-                        ui.colored_label(colors::WARNING, "Unsaved changes");
+                        ui.colored_label(colors::WARNING, "● Unsaved");
                     }
                 });
+
+                // Save As bar
+                if editor.save_as_open {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Save as path:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut editor.save_as_input)
+                                    .desired_width(320.0),
+                            );
+                            if ui.button("Save to new path").clicked()
+                                && !editor.save_as_input.trim().is_empty()
+                            {
+                                save_as_path = Some(editor.save_as_input.trim().to_string());
+                                editor.save_as_open = false;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                editor.save_as_open = false;
+                            }
+                        });
+                    });
+                }
+
+                // Find and Replace toolbar
+                if editor.search_open {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Find:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut editor.search_query)
+                                    .desired_width(180.0),
+                            );
+                            ui.label("Replace:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut editor.replace_query)
+                                    .desired_width(180.0),
+                            );
+                            ui.checkbox(&mut editor.case_sensitive, "Match Case");
+
+                            let matches = editor.count_search_matches();
+                            ui.label(RichText::new(format!("{matches} matches")).weak().small());
+
+                            if ui.button("Replace Next").clicked() {
+                                editor.replace_next();
+                            }
+                            if ui.button("Replace All").clicked() {
+                                editor.replace_all();
+                            }
+                        });
+                    });
+                }
+
                 if let Some(error) = &editor.error {
                     ui.colored_label(colors::DANGER, error);
                 }
+
                 ui.separator();
-                egui::ScrollArea::both().show(ui, |ui| {
-                    let text_edit = egui::TextEdit::multiline(&mut editor.content)
-                        .font(egui::TextStyle::Monospace)
-                        .code_editor()
-                        .desired_rows(24)
-                        .desired_width(f32::INFINITY);
-                    let response = ui.add(text_edit);
-                    if response.changed() {
-                        editor.dirty = true;
-                    }
-                });
+
+                // Main code editing area with line numbers
+                let line_count = editor.line_count();
+                let line_numbers: String = (1..=line_count)
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            // Line numbers column
+                            ui.add(
+                                egui::Label::new(RichText::new(&line_numbers).monospace().color(
+                                    if dark {
+                                        Color32::from_rgb(100, 110, 130)
+                                    } else {
+                                        Color32::from_rgb(160, 160, 170)
+                                    },
+                                ))
+                                .selectable(false),
+                            );
+                            ui.separator();
+
+                            // Code editor body
+                            let text_edit = egui::TextEdit::multiline(&mut editor.content)
+                                .font(egui::TextStyle::Monospace)
+                                .code_editor()
+                                .desired_rows(24)
+                                .desired_width(f32::INFINITY);
+                            let response = ui.add(text_edit);
+                            if response.changed() {
+                                editor.dirty = true;
+                            }
+                        });
+                    });
             });
+
+        if let Some(new_path) = save_as_path {
+            editor.path = new_path.clone();
+            editor.name = new_path.rsplit('/').next().unwrap_or(&new_path).to_string();
+            save = true;
+        }
 
         let to_save = if save {
             editor.saving = true;
             editor.error = None;
-            Some((editor.path.clone(), editor.content.clone()))
+            let final_content = editor.prepare_save_content();
+            Some((editor.path.clone(), final_content))
         } else {
             None
         };

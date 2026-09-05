@@ -213,3 +213,148 @@ pub fn bytes(value: u64) -> String {
     }
     format!("{amount:.1} {}", units[index])
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MonitorThresholds {
+    pub cpu_percent: f32,
+    pub memory_percent: f32,
+    pub swap_percent: f32,
+    pub disk_percent: f32,
+    pub inode_percent: f32,
+    pub load_per_core: f32,
+}
+
+impl Default for MonitorThresholds {
+    fn default() -> Self {
+        Self {
+            cpu_percent: 85.0,
+            memory_percent: 90.0,
+            swap_percent: 80.0,
+            disk_percent: 90.0,
+            inode_percent: 90.0,
+            load_per_core: 2.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlertSeverity {
+    Warning,
+    Critical,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorAlert {
+    pub metric: String,
+    pub message: String,
+    pub severity: AlertSeverity,
+    pub value: f32,
+    pub threshold: f32,
+}
+
+impl Snapshot {
+    pub fn check_alerts(&self, rates: &Rates, thresholds: &MonitorThresholds) -> Vec<MonitorAlert> {
+        let mut alerts = Vec::new();
+
+        if let Some(cpu) = rates.cpu {
+            let cpu_f32 = cpu as f32;
+            if cpu_f32 >= thresholds.cpu_percent {
+                alerts.push(MonitorAlert {
+                    metric: "CPU".into(),
+                    message: format!("CPU usage is high ({:.1}%)", cpu_f32),
+                    severity: if cpu_f32 >= 95.0 {
+                        AlertSeverity::Critical
+                    } else {
+                        AlertSeverity::Warning
+                    },
+                    value: cpu_f32,
+                    threshold: thresholds.cpu_percent,
+                });
+            }
+        }
+
+        if let (Some(used), Some(total)) = (self.memory_used(), self.memory.get("MemTotal"))
+            && *total > 0
+        {
+            let mem_pct = (used as f32 / *total as f32) * 100.0;
+            if mem_pct >= thresholds.memory_percent {
+                alerts.push(MonitorAlert {
+                    metric: "Memory".into(),
+                    message: format!("RAM usage is high ({:.1}%)", mem_pct),
+                    severity: if mem_pct >= 95.0 {
+                        AlertSeverity::Critical
+                    } else {
+                        AlertSeverity::Warning
+                    },
+                    value: mem_pct,
+                    threshold: thresholds.memory_percent,
+                });
+            }
+        }
+
+        if let (Some(used), Some(total)) = (self.swap_used(), self.memory.get("SwapTotal"))
+            && *total > 0
+        {
+            let swap_pct = (used as f32 / *total as f32) * 100.0;
+            if swap_pct >= thresholds.swap_percent {
+                alerts.push(MonitorAlert {
+                    metric: "Swap".into(),
+                    message: format!("Swap usage is high ({:.1}%)", swap_pct),
+                    severity: if swap_pct >= 90.0 {
+                        AlertSeverity::Critical
+                    } else {
+                        AlertSeverity::Warning
+                    },
+                    value: swap_pct,
+                    threshold: thresholds.swap_percent,
+                });
+            }
+        }
+
+        for fs in &self.filesystems {
+            if fs.percent >= thresholds.disk_percent {
+                alerts.push(MonitorAlert {
+                    metric: format!("Disk ({})", fs.mount),
+                    message: format!("Filesystem {} is at {:.0}%", fs.mount, fs.percent),
+                    severity: if fs.percent >= 95.0 {
+                        AlertSeverity::Critical
+                    } else {
+                        AlertSeverity::Warning
+                    },
+                    value: fs.percent,
+                    threshold: thresholds.disk_percent,
+                });
+            }
+        }
+
+        if let Some(load) = self.load {
+            let core_count = self
+                .cpu
+                .keys()
+                .filter(|k| k.starts_with("cpu") && *k != "cpu")
+                .count()
+                .max(1) as f32;
+            let load_1m = load[0] as f32;
+            let load_ratio = load_1m / core_count;
+            if load_ratio >= thresholds.load_per_core {
+                alerts.push(MonitorAlert {
+                    metric: "Load".into(),
+                    message: format!(
+                        "1-min load average ({:.2}) exceeds threshold ({:.1}x cores)",
+                        load_1m, load_ratio
+                    ),
+                    severity: if load_ratio >= thresholds.load_per_core * 1.5 {
+                        AlertSeverity::Critical
+                    } else {
+                        AlertSeverity::Warning
+                    },
+                    value: load_ratio,
+                    threshold: thresholds.load_per_core,
+                });
+            }
+        }
+
+        alerts
+    }
+}
