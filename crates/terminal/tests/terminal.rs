@@ -75,3 +75,58 @@ fn desktop_clipboard_events_preserve_terminal_control_shortcuts() {
         None
     );
 }
+
+#[test]
+fn terminal_feeds_box_drawing_and_block_elements_without_corruption() {
+    let mut t = Terminal::new(80, 24, 1000);
+    let box_str =
+        "┌──────┬──────┐\n│ left │ right│\n├──────┼──────┤\n│ test │ ok   │\n└──────┴──────┘\n";
+    t.feed(box_str.as_bytes());
+    let text = t.text();
+    assert!(text.contains('┌') && text.contains('┬') && text.contains('┐'));
+    assert!(text.contains('│') && text.contains('├') && text.contains('┤'));
+    assert!(text.contains('└') && text.contains('┴') && text.contains('┘'));
+
+    let mut t2 = Terminal::new(80, 24, 1000);
+    let blocks_str = "█▓▒░ ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ← → ↑ ↓\n";
+    t2.feed(blocks_str.as_bytes());
+    let text2 = t2.text();
+    assert!(
+        text2.contains('█') && text2.contains('▓') && text2.contains('▒') && text2.contains('░')
+    );
+    assert!(
+        text2.contains('←') && text2.contains('→') && text2.contains('↑') && text2.contains('↓')
+    );
+}
+
+#[test]
+fn custom_terminal_glyph_coverage() {
+    use kervesh_terminal::is_custom_glyph;
+    // Box drawing
+    assert!(is_custom_glyph('┌'));
+    assert!(is_custom_glyph('─'));
+    assert!(is_custom_glyph('│'));
+    assert!(is_custom_glyph('┼'));
+    assert!(is_custom_glyph('╭'));
+    assert!(is_custom_glyph('═'));
+    assert!(is_custom_glyph('║'));
+    assert!(is_custom_glyph('╔'));
+    // Block elements
+    assert!(is_custom_glyph('█'));
+    assert!(is_custom_glyph('▓'));
+    assert!(is_custom_glyph('▒'));
+    assert!(is_custom_glyph('░'));
+    assert!(is_custom_glyph('▀'));
+    assert!(is_custom_glyph('▄'));
+    assert!(is_custom_glyph('▌'));
+    assert!(is_custom_glyph('▐'));
+    // Arrows
+    assert!(is_custom_glyph('←'));
+    assert!(is_custom_glyph('→'));
+    assert!(is_custom_glyph('↑'));
+    assert!(is_custom_glyph('↓'));
+    // Regular characters should not be custom glyphs
+    assert!(!is_custom_glyph('A'));
+    assert!(!is_custom_glyph('1'));
+    assert!(!is_custom_glyph('$'));
+}

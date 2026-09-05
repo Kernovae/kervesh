@@ -52,29 +52,37 @@ impl ResolvedTheme {
     }
 }
 
-// Brand color palette constants
+// Brand color palette constants aligned with design-tokens.json
 pub mod colors {
     use egui::Color32;
 
-    pub const BLACK: Color32 = Color32::from_rgb(0x0B, 0x0B, 0x0C);
-    pub const CHARCOAL: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
-    pub const GRAPHITE: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
-    pub const SLATE: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x3A);
-    pub const MUTED: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
-    pub const FOREGROUND: Color32 = Color32::from_rgb(0xED, 0xED, 0xED);
+    pub const DARK_BG: Color32 = Color32::from_rgb(0x11, 0x11, 0x12);
+    pub const DARK_PANEL: Color32 = Color32::from_rgb(0x17, 0x17, 0x19);
+    pub const DARK_PANEL_RAISED: Color32 = Color32::from_rgb(0x1D, 0x1D, 0x20);
+    pub const DARK_BORDER: Color32 = Color32::from_rgb(0x34, 0x34, 0x38);
+    pub const FOREGROUND: Color32 = Color32::from_rgb(0xE8, 0xE8, 0xE8);
+    pub const MUTED: Color32 = Color32::from_rgb(0x8E, 0x8E, 0x92);
     pub const WHITE: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 
-    pub const DANGER: Color32 = Color32::from_rgb(0xC8, 0x5B, 0x62);
-    pub const WARNING: Color32 = Color32::from_rgb(0xC4, 0x9A, 0x5A);
-    pub const SUCCESS: Color32 = Color32::from_rgb(0x58, 0xA6, 0x7B);
-    pub const DISCONNECTED: Color32 = Color32::from_rgb(0x77, 0x77, 0x77);
+    // Aliases for backwards compatibility in existing styling
+    pub const BLACK: Color32 = DARK_BG;
+    pub const CHARCOAL: Color32 = DARK_PANEL;
+    pub const GRAPHITE: Color32 = DARK_PANEL_RAISED;
+    pub const SLATE: Color32 = DARK_BORDER;
+
+    // Semantic status colors
+    pub const SUCCESS: Color32 = Color32::from_rgb(0x48, 0xB8, 0x7B);
+    pub const WARNING: Color32 = Color32::from_rgb(0xCA, 0x97, 0x48);
+    pub const DANGER: Color32 = Color32::from_rgb(0xCA, 0x51, 0x57);
+    pub const DISCONNECTED: Color32 = Color32::from_rgb(0x68, 0x68, 0x6C);
 
     // Light mode surfaces
-    pub const LIGHT_BG: Color32 = Color32::from_rgb(0xF6, 0xF7, 0xF8);
-    pub const LIGHT_PANEL: Color32 = Color32::from_rgb(0xEE, 0xF0, 0xF2);
-    pub const LIGHT_BORDER: Color32 = Color32::from_rgb(0xD5, 0xD8, 0xDC);
-    pub const LIGHT_FOREGROUND: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
-    pub const LIGHT_MUTED: Color32 = Color32::from_rgb(0x6A, 0x73, 0x7D);
+    pub const LIGHT_BG: Color32 = Color32::from_rgb(0xFA, 0xFA, 0xF8);
+    pub const LIGHT_PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+    pub const LIGHT_PANEL_RAISED: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF0);
+    pub const LIGHT_BORDER: Color32 = Color32::from_rgb(0xDA, 0xDA, 0xDC);
+    pub const LIGHT_FOREGROUND: Color32 = Color32::from_rgb(0x17, 0x17, 0x17);
+    pub const LIGHT_MUTED: Color32 = Color32::from_rgb(0x6F, 0x6F, 0x73);
 }
 
 #[cfg(test)]

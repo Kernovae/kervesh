@@ -1,16 +1,38 @@
 use crate::{
     app::{App, Confirmation, FileDialog, FileDialogKind, TransferRow},
     classify::FileType,
-    icons::paint_file_icon,
+    icons::{UiIcon, file_icon_texture, paint_file_icon, ui_icon_button},
     theme::colors,
 };
-use egui::{Pos2, Rect, RichText, Vec2};
+use egui::{Color32, Key, Pos2, Rect, RichText, Sense, Vec2};
 use kervesh_core::bytes;
 use kervesh_ssh::{
     CancellationToken, Command, Direction, FileOperation, TransferRequest, TransferState,
     remote_join,
 };
 use std::path::PathBuf;
+
+fn format_modified(ts: Option<u32>) -> String {
+    let Some(ts) = ts else {
+        return "—".into();
+    };
+    let days = (ts as u64 / 86400) as i64;
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1020 + doe / 1461 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let m_idx = (m as usize).saturating_sub(1).min(11);
+    format!("{} {}, {}", MONTHS[m_idx], d, y)
+}
 
 impl App {
     pub(crate) fn file_sidebar(&mut self, ctx: &egui::Context) {
@@ -21,46 +43,52 @@ impl App {
         let mut download = None;
 
         egui::SidePanel::right("files")
-            .default_width(300.0)
-            .width_range(240.0..=600.0)
+            .default_width(320.0)
+            .width_range(240.0..=650.0)
             .show(ctx, |ui| {
                 let Some(tab) = self.tabs.get_mut(self.active) else {
                     return;
                 };
                 let id = tab.id;
+                let dark = self.settings.dark;
 
+                // Tab Header: SFTP / File Browser / Bookmarks
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("SFTP").small().strong());
-                    ui.label(RichText::new(&tab.host.name).small().weak());
+                    let _ = ui.selectable_label(true, "SFTP");
+                    let _ = ui.selectable_label(false, "File Browser");
+                    let _ = ui.selectable_label(false, "Bookmarks");
+
                     if tab.busy {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spinner();
                         });
                     }
                 });
+                ui.separator();
 
                 ui.add_enabled_ui(tab.connected, |ui| {
-                    // Action toolbar
+                    // Navigation bar: Back, Forward, Path Edit, Actions
                     ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(!tab.history.is_empty(), egui::Button::new("←"))
-                            .on_hover_text("Back")
-                            .clicked()
+                        if ui_icon_button(ui, UiIcon::Back, "Back (Alt+Left)", dark).clicked()
                             && let Some(path) = tab.history.pop()
                         {
                             operation = Some((id, FileOperation::List(path)));
                         }
-                        if ui.button("↑").on_hover_text("Parent directory").clicked() {
+                        if ui_icon_button(ui, UiIcon::Forward, "Forward", dark).clicked() {
+                            // Forward placeholder if history stack supports it
+                        }
+                        if ui_icon_button(ui, UiIcon::Parent, "Parent directory", dark).clicked() {
                             tab.history.push(tab.path.clone());
                             operation = Some((id, FileOperation::List(format!("{}/..", tab.path))));
                         }
-                        if ui.button("⟳").on_hover_text("Refresh").clicked() {
+                        if ui_icon_button(ui, UiIcon::Refresh, "Refresh", dark).clicked() {
                             operation = Some((id, FileOperation::List(tab.path.clone())));
                         }
-                        if ui.button("⤒").on_hover_text("Upload local file…").clicked() {
+                        if ui_icon_button(ui, UiIcon::Upload, "Upload local file…", dark).clicked()
+                        {
                             upload = true;
                         }
-                        if ui.button("+ File").on_hover_text("New file").clicked() {
+                        if ui_icon_button(ui, UiIcon::NewFile, "New file", dark).clicked() {
                             dialog = Some(FileDialog {
                                 tab: id,
                                 kind: FileDialogKind::CreateFile,
@@ -68,7 +96,7 @@ impl App {
                                 error: None,
                             });
                         }
-                        if ui.button("+ Folder").on_hover_text("New folder").clicked() {
+                        if ui_icon_button(ui, UiIcon::NewFolder, "New folder", dark).clicked() {
                             dialog = Some(FileDialog {
                                 tab: id,
                                 kind: FileDialogKind::CreateDirectory,
@@ -78,13 +106,13 @@ impl App {
                         }
                     });
 
-                    // Direct path edit / navigation
+                    // Direct path edit box
                     let path_resp = ui.add(
                         egui::TextEdit::singleline(&mut tab.path_input)
                             .hint_text("Remote path…")
                             .desired_width(f32::INFINITY),
                     );
-                    if path_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if path_resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         tab.history.push(tab.path.clone());
                         operation = Some((id, FileOperation::List(tab.path_input.clone())));
                     }
@@ -99,23 +127,74 @@ impl App {
 
                 ui.separator();
 
-                // File rows
-                let dark = self.settings.dark;
+                // Responsive Columns Header
+                let panel_width = ui.available_width();
+                let show_size = panel_width >= 260.0;
+                let show_modified = panel_width >= 360.0;
+
+                ui.horizontal(|ui| {
+                    ui.add_space(26.0);
+                    ui.label(RichText::new("Name").small().strong().weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if show_modified {
+                            ui.label(RichText::new("Modified").small().strong().weak());
+                            ui.add_space(20.0);
+                        }
+                        if show_size {
+                            ui.label(RichText::new("Size").small().strong().weak());
+                            ui.add_space(10.0);
+                        }
+                    });
+                });
+                ui.separator();
+
                 let text_color = if dark {
                     colors::FOREGROUND
                 } else {
                     colors::LIGHT_FOREGROUND
                 };
-                let icon_color = if dark {
-                    colors::FOREGROUND
-                } else {
-                    colors::LIGHT_FOREGROUND
-                };
 
+                // File rows list
                 egui::ScrollArea::vertical()
                     .id_salt("remote_files")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        // Parent directory entry '..'
+                        if tab.path != "/" && !tab.path.is_empty() {
+                            let mut item_rect = ui.available_rect_before_wrap();
+                            item_rect.set_height(24.0);
+                            let response = ui.allocate_rect(item_rect, Sense::click());
+                            if response.hovered() {
+                                let bg = if dark {
+                                    colors::GRAPHITE
+                                } else {
+                                    colors::LIGHT_PANEL
+                                };
+                                ui.painter().rect_filled(item_rect, 4.0, bg);
+                            }
+                            // Up arrow
+                            ui.painter().text(
+                                Pos2::new(item_rect.min.x + 8.0, item_rect.min.y + 3.0),
+                                egui::Align2::LEFT_TOP,
+                                "↑",
+                                egui::FontId::proportional(14.0),
+                                text_color,
+                            );
+                            ui.painter().text(
+                                Pos2::new(item_rect.min.x + 28.0, item_rect.min.y + 3.0),
+                                egui::Align2::LEFT_TOP,
+                                "..",
+                                egui::FontId::proportional(13.0),
+                                text_color,
+                            );
+                            if response.double_clicked() {
+                                tab.history.push(tab.path.clone());
+                                operation =
+                                    Some((id, FileOperation::List(format!("{}/..", tab.path))));
+                            }
+                            ui.allocate_space(Vec2::new(0.0, 2.0));
+                        }
+
                         for entry in &tab.entries {
                             if (!self.settings.show_hidden && entry.name.starts_with('.'))
                                 || (!tab.filter.is_empty()
@@ -133,7 +212,7 @@ impl App {
 
                             let mut item_rect = ui.available_rect_before_wrap();
                             item_rect.set_height(24.0);
-                            let response = ui.allocate_rect(item_rect, egui::Sense::click());
+                            let response = ui.allocate_rect(item_rect, Sense::click());
 
                             if response.clicked() {
                                 tab.selected = Some(entry.clone());
@@ -160,12 +239,49 @@ impl App {
                                 Pos2::new(item_rect.min.x + 6.0, item_rect.min.y + 4.0),
                                 Vec2::splat(16.0),
                             );
-                            paint_file_icon(ui.painter(), icon_rect, file_type, icon_color);
+                            paint_file_icon(ui.painter(), icon_rect, file_type, text_color);
 
-                            // Render text clipped
+                            // Calculate column text bounds
+                            let mut text_end = item_rect.max.x - 6.0;
+
+                            if show_modified {
+                                let date_str = format_modified(entry.modified);
+                                let date_pos =
+                                    Pos2::new(item_rect.max.x - 6.0, item_rect.min.y + 3.0);
+                                ui.painter().text(
+                                    date_pos,
+                                    egui::Align2::RIGHT_TOP,
+                                    &date_str,
+                                    egui::FontId::proportional(12.0),
+                                    colors::MUTED,
+                                );
+                                text_end -= 85.0;
+                            }
+
+                            if show_size {
+                                let size_str = if entry.directory {
+                                    "—".into()
+                                } else {
+                                    bytes(entry.size)
+                                };
+                                let size_pos = Pos2::new(text_end - 10.0, item_rect.min.y + 3.0);
+                                ui.painter().text(
+                                    size_pos,
+                                    egui::Align2::RIGHT_TOP,
+                                    &size_str,
+                                    egui::FontId::proportional(12.0),
+                                    colors::MUTED,
+                                );
+                                text_end -= 60.0;
+                            }
+
+                            // Render name with clipping
                             let label_rect = Rect::from_min_max(
                                 Pos2::new(item_rect.min.x + 28.0, item_rect.min.y + 3.0),
-                                Pos2::new(item_rect.max.x - 6.0, item_rect.max.y - 3.0),
+                                Pos2::new(
+                                    text_end.max(item_rect.min.x + 30.0),
+                                    item_rect.max.y - 3.0,
+                                ),
                             );
                             ui.painter().with_clip_rect(label_rect).text(
                                 label_rect.min,
@@ -184,9 +300,13 @@ impl App {
                                 Err(_) => continue,
                             };
 
-                            if response.double_clicked() && (entry.directory || entry.symlink) {
-                                tab.history.push(tab.path.clone());
-                                operation = Some((id, FileOperation::List(path.clone())));
+                            if response.double_clicked() {
+                                if entry.directory || entry.symlink {
+                                    tab.history.push(tab.path.clone());
+                                    operation = Some((id, FileOperation::List(path.clone())));
+                                } else {
+                                    operation = Some((id, FileOperation::Read(path.clone())));
+                                }
                             }
 
                             // Tooltip with comprehensive metadata
@@ -202,7 +322,10 @@ impl App {
                                         "Modified: {}",
                                         entry
                                             .modified
-                                            .map(|v| format!("{v} (Unix seconds)"))
+                                            .map(|v| format!(
+                                                "{v} (Unix seconds) · {}",
+                                                format_modified(Some(v))
+                                            ))
                                             .unwrap_or_else(|| "unknown".into())
                                     ));
                                     ui.label(format!(
@@ -252,7 +375,6 @@ impl App {
                                         });
                                         ui.close();
                                     }
-                                    ui.separator();
                                     if ui.button("Permissions…").clicked() {
                                         dialog = Some(FileDialog {
                                             tab: id,
@@ -281,6 +403,51 @@ impl App {
                                 });
 
                             ui.allocate_space(Vec2::new(0.0, 2.0));
+                        }
+
+                        // Keyboard navigation handling for selected file
+                        if let Some(selected) = &tab.selected {
+                            if ui.input(|i| i.key_pressed(Key::Enter)) {
+                                let path =
+                                    remote_join(&tab.path, &selected.name).unwrap_or_default();
+                                if selected.directory || selected.symlink {
+                                    tab.history.push(tab.path.clone());
+                                    operation = Some((id, FileOperation::List(path)));
+                                } else {
+                                    operation = Some((id, FileOperation::Read(path)));
+                                }
+                            }
+                            if ui.input(|i| i.key_pressed(Key::F2)) {
+                                let path =
+                                    remote_join(&tab.path, &selected.name).unwrap_or_default();
+                                dialog = Some(FileDialog {
+                                    tab: id,
+                                    kind: FileDialogKind::Rename(path),
+                                    name: selected.name.clone(),
+                                    error: None,
+                                });
+                            }
+                            if ui.input(|i| i.key_pressed(Key::Delete)) {
+                                let path =
+                                    remote_join(&tab.path, &selected.name).unwrap_or_default();
+                                deletion = Some(Confirmation::File(
+                                    id,
+                                    FileOperation::Delete(path, selected.directory),
+                                ));
+                            }
+                            if ui.input(|i| i.modifiers.command && i.key_pressed(Key::C))
+                                && let Ok(path) = remote_join(&tab.path, &selected.name)
+                            {
+                                ui.ctx().copy_text(path);
+                            }
+                        }
+
+                        // Alt+Left or Backspace to go back
+                        if (ui.input(|i| i.modifiers.alt && i.key_pressed(Key::ArrowLeft))
+                            || ui.input(|i| i.key_pressed(Key::Backspace)))
+                            && let Some(path) = tab.history.pop()
+                        {
+                            operation = Some((id, FileOperation::List(path)));
                         }
 
                         if tab.entries.is_empty() && !tab.busy {
@@ -517,71 +684,178 @@ impl App {
 
     pub(crate) fn transfer_panel(&mut self, ctx: &egui::Context) {
         let mut retries = Vec::new();
+        let mut clear_completed = false;
+        let dark = self.settings.dark;
+
         egui::TopBottomPanel::bottom("transfers")
             .resizable(true)
-            .default_height(180.0)
-            .height_range(100.0..=400.0)
+            .default_height(140.0)
+            .height_range(90.0..=350.0)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("TRANSFER QUEUE").small().strong());
-                    ui.label(RichText::new("Session history · streamed files").small().weak());
-                    if ui.small_button("Hide").clicked() {
-                        self.transfers_open = false;
+                let mut active_count = 0;
+                let mut completed_count = 0;
+                for tab in &self.tabs {
+                    for row in &tab.transfers {
+                        match row.state {
+                            TransferState::Running | TransferState::Queued => active_count += 1,
+                            TransferState::Complete => completed_count += 1,
+                            _ => {}
+                        }
                     }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Transfer Queue").strong());
+                    ui.label(
+                        RichText::new(format!(
+                            "{} active, {} completed",
+                            active_count, completed_count
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Clear completed").clicked() {
+                            clear_completed = true;
+                        }
+                        if ui.small_button("Hide").clicked() {
+                            self.transfers_open = false;
+                        }
+                    });
                 });
+                ui.separator();
+
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut count = 0;
                     for tab in &mut self.tabs {
                         for row in &mut tab.transfers {
                             count += 1;
-                            ui.horizontal(|ui| {
-                                ui.label(format!(
-                                    "{}  {}",
-                                    match row.request.direction {
-                                        Direction::Upload => "↑",
-                                        Direction::Download => "↓",
-                                    },
-                                    tab.host.name
-                                ));
-                                ui.label(&row.request.remote);
-                                let ratio = if row.total == 0 {
-                                    0.0
-                                } else {
-                                    row.done as f32 / row.total as f32
-                                };
-                                ui.add(egui::ProgressBar::new(ratio).desired_width(140.0));
-                                ui.label(format!(
-                                    "{} / {} · {}/s",
-                                    bytes(row.done),
-                                    bytes(row.total),
-                                    bytes(row.speed.max(0.0) as u64)
-                                ));
-                                ui.label(match &row.state {
-                                    TransferState::Queued => "Queued",
-                                    TransferState::Running => "Transferring",
-                                    TransferState::Complete => "Complete",
-                                    TransferState::Cancelled => "Cancelled",
-                                    TransferState::Failed(_) => "Failed",
+                            let filename = row
+                                .request
+                                .remote
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(&row.request.remote);
+                            let file_type = FileType::from_filename(filename);
+
+                            let item_rect = ui.available_rect_before_wrap();
+                            ui.allocate_ui(Vec2::new(item_rect.width(), 32.0), |ui| {
+                                ui.horizontal(|ui| {
+                                    // File type icon
+                                    let (icon_rect, _) = ui
+                                        .allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                                    let texture = file_icon_texture(ui.ctx(), file_type, dark);
+                                    let uv = Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    );
+                                    ui.painter().image(
+                                        texture.id(),
+                                        icon_rect,
+                                        uv,
+                                        Color32::WHITE,
+                                    );
+
+                                    // File name + path
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(filename).strong().size(13.0));
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} → {}",
+                                                tab.host.name, row.request.remote
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    });
+
+                                    ui.add_space(16.0);
+
+                                    // Progress bar
+                                    let ratio = if row.total == 0 {
+                                        if matches!(row.state, TransferState::Complete) {
+                                            1.0
+                                        } else {
+                                            0.0
+                                        }
+                                    } else {
+                                        (row.done as f32 / row.total as f32).clamp(0.0, 1.0)
+                                    };
+                                    let pct = (ratio * 100.0) as u32;
+
+                                    ui.add(
+                                        egui::ProgressBar::new(ratio)
+                                            .desired_width(120.0)
+                                            .desired_height(6.0),
+                                    );
+
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} / {} ({}%)",
+                                            bytes(row.done),
+                                            bytes(row.total),
+                                            pct
+                                        ))
+                                        .small(),
+                                    );
+
+                                    if matches!(row.state, TransferState::Running) && row.speed > 0.0 {
+                                        ui.label(
+                                            RichText::new(format!("{}/s", bytes(row.speed as u64)))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    }
+
+                                    // State badges / buttons
+                                    match &row.state {
+                                        TransferState::Complete => {
+                                            ui.colored_label(colors::SUCCESS, "● Complete");
+                                        }
+                                        TransferState::Running | TransferState::Queued => {
+                                            if ui_icon_button(
+                                                ui,
+                                                UiIcon::Cancel,
+                                                "Cancel transfer",
+                                                dark,
+                                            )
+                                            .clicked()
+                                            {
+                                                row.request.cancel.cancel();
+                                            }
+                                        }
+                                        TransferState::Cancelled => {
+                                            ui.label(RichText::new("Cancelled").small().weak());
+                                            if tab.connected
+                                                && ui_icon_button(
+                                                    ui,
+                                                    UiIcon::Retry,
+                                                    "Retry",
+                                                    dark,
+                                                )
+                                                .clicked()
+                                            {
+                                                retries.push((tab.id, row.request.clone()));
+                                            }
+                                        }
+                                        TransferState::Failed(err) => {
+                                            ui.colored_label(colors::DANGER, format!("Failed: {err}"));
+                                            if tab.connected
+                                                && ui_icon_button(
+                                                    ui,
+                                                    UiIcon::Retry,
+                                                    "Retry",
+                                                    dark,
+                                                )
+                                                .clicked()
+                                            {
+                                                retries.push((tab.id, row.request.clone()));
+                                            }
+                                        }
+                                    }
                                 });
-                                if matches!(
-                                    row.state,
-                                    TransferState::Queued | TransferState::Running
-                                ) && ui.small_button("Cancel").clicked()
-                                {
-                                    row.request.cancel.cancel();
-                                }
-                                if matches!(
-                                    row.state,
-                                    TransferState::Failed(_) | TransferState::Cancelled
-                                ) && tab.connected
-                                    && ui.small_button("Retry").clicked()
-                                {
-                                    retries.push((tab.id, row.request.clone()));
-                                }
                             });
-                            if let TransferState::Failed(error) = &row.state {
-                                ui.colored_label(colors::DANGER, error);
-                            }
+                            ui.separator();
                         }
                     }
                     if count == 0 {
@@ -594,6 +868,14 @@ impl App {
                     }
                 });
             });
+
+        if clear_completed {
+            for tab in &mut self.tabs {
+                tab.transfers
+                    .retain(|t| !matches!(t.state, TransferState::Complete));
+            }
+        }
+
         for (id, mut request) in retries {
             self.next_id += 1;
             request.id = self.next_id;

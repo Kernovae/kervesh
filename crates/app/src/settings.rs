@@ -1,7 +1,6 @@
 use crate::app::{App, Confirmation};
 use egui::RichText;
 use kervesh_core::{Settings, bytes};
-use kervesh_ssh::Command;
 
 impl App {
     pub(crate) fn settings_dialog(&mut self, ctx: &egui::Context) {
@@ -140,110 +139,6 @@ impl App {
                     self.notice = Some(format!("Import failed: {e}"));
                 }
             }
-        }
-    }
-    pub(crate) fn health_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("LOCAL WORKSPACE").small().strong());
-                ui.label(RichText::new("Ready to connect").weak());
-            });
-            return;
-        };
-        let mut pause = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.colored_label(
-                if tab.connected {
-                    crate::theme::colors::SUCCESS
-                } else {
-                    crate::theme::colors::DISCONNECTED
-                },
-                if tab.connected { "●" } else { "○" },
-            );
-            if let Some(snapshot) = &tab.snapshot {
-                let cpu_val = tab.rates.cpu;
-                let cpu_alert = cpu_val.is_some_and(|n| n >= 90.0);
-                let cpu_color = if cpu_alert {
-                    crate::theme::colors::WARNING
-                } else {
-                    ui.visuals().text_color()
-                };
-                ui.colored_label(
-                    cpu_color,
-                    format!(
-                        "CPU {}",
-                        cpu_val
-                            .map(|n| format!("{n:.0}%"))
-                            .unwrap_or_else(|| "sampling…".into())
-                    ),
-                );
-                ui.separator();
-
-                let ram_used = snapshot.memory_used();
-                let ram_total = snapshot.memory.get("MemTotal").copied().unwrap_or(0);
-                let ram_alert =
-                    ram_total > 0 && ram_used.is_some_and(|u| u as f64 / ram_total as f64 >= 0.9);
-                let ram_color = if ram_alert {
-                    crate::theme::colors::WARNING
-                } else {
-                    ui.visuals().text_color()
-                };
-                ui.colored_label(
-                    ram_color,
-                    format!("RAM {}", ram_used.map(bytes).unwrap_or_else(|| "—".into())),
-                );
-                ui.separator();
-
-                if let Some(load) = snapshot.load {
-                    ui.monospace(format!("Load {:.2}", load[0]));
-                    ui.separator();
-                }
-                if let Some(fs) = snapshot.filesystems.iter().find(|f| f.mount == "/") {
-                    let disk_alert = fs.percent >= 90.0;
-                    let disk_color = if disk_alert {
-                        crate::theme::colors::WARNING
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.colored_label(disk_color, format!("/ {:.0}%", fs.percent));
-                    ui.separator();
-                }
-                let (rx, tx) = tab
-                    .rates
-                    .network
-                    .iter()
-                    .filter(|(name, _)| name.as_str() != "lo")
-                    .fold((0.0, 0.0), |(rx, tx), (_, n)| (rx + n.0, tx + n.1));
-                ui.monospace(format!("↓ {}  ↑ {}/s", bytes(rx as u64), bytes(tx as u64)));
-            } else {
-                ui.label(
-                    RichText::new(if tab.connected {
-                        "Collecting remote system health…"
-                    } else {
-                        "No live metrics"
-                    })
-                    .weak(),
-                );
-            }
-            if ui.small_button("Inspector").clicked() {
-                self.inspector_open = true;
-            }
-            if ui
-                .add_enabled(
-                    tab.connected,
-                    egui::Button::new(if tab.paused { "Resume" } else { "Pause" }),
-                )
-                .clicked()
-            {
-                tab.paused = !tab.paused;
-                pause = Some((tab.id, tab.paused));
-            }
-            if tab.paused {
-                ui.label(RichText::new("Paused").weak());
-            }
-        });
-        if let Some((id, value)) = pause {
-            self.send(id, Command::PauseMonitor(value));
         }
     }
     pub(crate) fn inspector(&mut self, ctx: &egui::Context) {
