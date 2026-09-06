@@ -55,6 +55,15 @@ pub enum Event {
         path: String,
         content: String,
     },
+    FileWriteComplete {
+        path: String,
+        operation_id: u64,
+    },
+    FileWriteError {
+        path: String,
+        operation_id: u64,
+        error: String,
+    },
     Processes(Vec<kervesh_core::ProcessInfo>),
     ProcessSignalled {
         pid: u32,

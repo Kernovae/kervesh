@@ -1,3 +1,7 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_SAVE_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineEnding {
     Lf,
@@ -92,6 +96,12 @@ pub struct RemoteEditor {
     pub save_as_open: bool,
     pub save_as_input: String,
     pub conflict_warning: Option<String>,
+    pub close_prompt: bool,
+    close_after_save: bool,
+    revision: u64,
+    pending_save_revision: Option<u64>,
+    pending_save_path: Option<String>,
+    pending_save_id: Option<u64>,
 }
 
 impl RemoteEditor {
@@ -122,7 +132,99 @@ impl RemoteEditor {
             go_to_line_input: String::new(),
             save_as_open: false,
             conflict_warning: None,
+            close_prompt: false,
+            close_after_save: false,
+            revision: 0,
+            pending_save_revision: None,
+            pending_save_path: None,
+            pending_save_id: None,
         }
+    }
+
+    pub fn mark_changed(&mut self) {
+        self.dirty = true;
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    pub fn begin_save(&mut self) -> Option<(String, String, u64)> {
+        self.begin_save_to(self.path.clone())
+    }
+
+    pub fn begin_save_to(&mut self, path: String) -> Option<(String, String, u64)> {
+        let operation_id = NEXT_SAVE_OPERATION_ID.fetch_add(1, Ordering::Relaxed);
+        self.begin_save_to_with_id(path, operation_id)
+    }
+
+    pub fn begin_save_to_with_id(
+        &mut self,
+        path: String,
+        operation_id: u64,
+    ) -> Option<(String, String, u64)> {
+        if !self.dirty || self.saving {
+            return None;
+        }
+        self.saving = true;
+        self.error = None;
+        self.pending_save_revision = Some(self.revision);
+        self.pending_save_path = Some(path.clone());
+        self.pending_save_id = Some(operation_id);
+        Some((path, self.prepare_save_content(), operation_id))
+    }
+
+    pub fn complete_save(&mut self, path: &str, operation_id: u64) -> bool {
+        if self.pending_save_path.as_deref() != Some(path)
+            || self.pending_save_id != Some(operation_id)
+        {
+            return false;
+        }
+        let saved_revision = self.pending_save_revision.take();
+        self.pending_save_path = None;
+        self.pending_save_id = None;
+        self.saving = false;
+        self.path = path.to_owned();
+        self.name = path.rsplit('/').next().unwrap_or(path).to_owned();
+        self.save_as_input = path.to_owned();
+        if saved_revision == Some(self.revision) {
+            self.dirty = false;
+            self.original_content = self.content.clone();
+        } else {
+            self.dirty = true;
+            self.close_after_save = false;
+        }
+        true
+    }
+
+    pub fn fail_save(&mut self, path: &str, operation_id: u64, error: String) -> bool {
+        if self.pending_save_path.as_deref() != Some(path)
+            || self.pending_save_id != Some(operation_id)
+        {
+            return false;
+        }
+        self.pending_save_revision = None;
+        self.pending_save_path = None;
+        self.pending_save_id = None;
+        self.saving = false;
+        self.dirty = true;
+        self.close_after_save = false;
+        self.error = Some(error);
+        true
+    }
+
+    pub fn request_close_after_save(&mut self) -> Option<(String, String, u64)> {
+        self.close_after_save = true;
+        self.begin_save()
+    }
+
+    pub fn take_close_after_save(&mut self) -> bool {
+        std::mem::take(&mut self.close_after_save)
+    }
+
+    pub fn pending_save_path(&self) -> Option<&str> {
+        self.pending_save_path.as_deref()
+    }
+
+    pub fn pending_save(&self) -> Option<(&str, u64)> {
+        Some((self.pending_save_path.as_deref()?, self.pending_save_id?))
     }
 
     pub fn line_count(&self) -> usize {
@@ -164,7 +266,7 @@ impl RemoteEditor {
                 .next()
         } {
             self.content.replace_range(start..end, &self.replace_query);
-            self.dirty = true;
+            self.mark_changed();
             true
         } else {
             false
@@ -183,13 +285,17 @@ impl RemoteEditor {
                     .replace(&self.search_query, &self.replace_query);
             } else {
                 let ranges = case_insensitive_ranges(&self.content, &self.search_query);
-                let mut result = self.content.clone();
-                for (start, end) in ranges.into_iter().rev() {
-                    result.replace_range(start..end, &self.replace_query);
+                let mut result = String::with_capacity(self.content.len());
+                let mut cursor = 0;
+                for (start, end) in ranges {
+                    result.push_str(&self.content[cursor..start]);
+                    result.push_str(&self.replace_query);
+                    cursor = end;
                 }
+                result.push_str(&self.content[cursor..]);
                 self.content = result;
             }
-            self.dirty = true;
+            self.mark_changed();
         }
         count
     }
@@ -206,12 +312,13 @@ fn case_insensitive_ranges(content: &str, query: &str) -> Vec<(usize, usize)> {
     }
 
     let mut lower_content = String::with_capacity(content.len());
-    let mut lower_char_ranges = Vec::new();
+    let mut lower_byte_ranges: Vec<(usize, usize)> = Vec::with_capacity(content.len());
     for (start, ch) in content.char_indices() {
         let end = start + ch.len_utf8();
         for lower_ch in fold_case(&ch.to_string()).chars() {
+            let lower_bytes = lower_ch.len_utf8();
             lower_content.push(lower_ch);
-            lower_char_ranges.push((start, end));
+            lower_byte_ranges.extend(std::iter::repeat_n((start, end), lower_bytes));
         }
     }
 
@@ -219,10 +326,8 @@ fn case_insensitive_ranges(content: &str, query: &str) -> Vec<(usize, usize)> {
         .match_indices(&lower_query)
         .filter_map(|(lower_start, matched)| {
             let lower_end = lower_start + matched.len();
-            let start_char = lower_content[..lower_start].chars().count();
-            let end_char = lower_content[..lower_end].chars().count();
-            let start = lower_char_ranges.get(start_char)?.0;
-            let end = lower_char_ranges.get(end_char.checked_sub(1)?)?.1;
+            let start = lower_byte_ranges.get(lower_start)?.0;
+            let end = lower_byte_ranges.get(lower_end.checked_sub(1)?)?.1;
             Some((start, end))
         })
         .collect::<Vec<_>>();
@@ -290,5 +395,88 @@ mod tests {
 
         assert_eq!(editor.replace_all(), 1);
         assert_eq!(editor.content, "Zİ");
+    }
+
+    #[test]
+    fn save_completion_preserves_edit_made_while_write_was_pending() {
+        let mut editor = RemoteEditor::new("remote.txt".into(), "before".into());
+        editor.content = "saved".into();
+        editor.mark_changed();
+        let snapshot = editor.begin_save().expect("dirty editor should start save");
+
+        editor.content.push_str(" and edited");
+        editor.mark_changed();
+
+        assert!(editor.complete_save(&snapshot.0, snapshot.2));
+        assert!(editor.dirty);
+        assert_eq!(editor.original_content, "before");
+        assert_eq!(editor.content, "saved and edited");
+    }
+
+    #[test]
+    fn save_completion_requires_matching_path() {
+        let mut editor = RemoteEditor::new("remote.txt".into(), "before".into());
+        editor.content = "saved".into();
+        editor.mark_changed();
+        let snapshot = editor.begin_save().expect("dirty editor should start save");
+
+        assert!(!editor.complete_save("other.txt", snapshot.2));
+        assert!(editor.saving);
+        assert!(editor.dirty);
+    }
+
+    #[test]
+    fn close_after_save_is_consumed_only_after_success() {
+        let mut editor = RemoteEditor::new("remote.txt".into(), "before".into());
+        editor.content = "saved".into();
+        editor.mark_changed();
+        let snapshot = editor
+            .request_close_after_save()
+            .expect("dirty editor should start close save");
+
+        assert!(editor.complete_save(&snapshot.0, snapshot.2));
+        assert!(editor.take_close_after_save());
+        assert!(!editor.dirty);
+    }
+
+    #[test]
+    fn save_as_changes_editor_path_only_after_success() {
+        let mut editor = RemoteEditor::new("old.txt".into(), "before".into());
+        editor.content = "saved".into();
+        editor.mark_changed();
+        let snapshot = editor
+            .begin_save_to("new.txt".into())
+            .expect("dirty editor should start save as");
+
+        assert_eq!(editor.path, "old.txt");
+        assert!(editor.fail_save(&snapshot.0, snapshot.2, "write failed".into()));
+        assert_eq!(editor.path, "old.txt");
+        assert!(editor.dirty);
+
+        let snapshot = editor
+            .begin_save_to("new.txt".into())
+            .expect("failed save should be retryable");
+        assert!(editor.complete_save(&snapshot.0, snapshot.2));
+        assert_eq!(editor.path, "new.txt");
+        assert!(!editor.dirty);
+    }
+
+    #[test]
+    fn stale_write_completion_does_not_settle_a_new_save() {
+        let mut editor = RemoteEditor::new("remote.txt".into(), "before".into());
+        editor.content = "first".into();
+        editor.mark_changed();
+        let old_save = editor.begin_save().expect("first save should start");
+        assert!(editor.fail_save(&old_save.0, old_save.2, "discarded".into()));
+
+        editor.content = "second".into();
+        editor.mark_changed();
+        let new_save = editor.begin_save().expect("retry save should start");
+        assert_ne!(old_save.2, new_save.2);
+        assert!(!editor.complete_save(&old_save.0, old_save.2));
+        assert!(editor.saving);
+        assert!(editor.dirty);
+        assert!(editor.complete_save(&new_save.0, new_save.2));
+        assert!(!editor.dirty);
     }
 }

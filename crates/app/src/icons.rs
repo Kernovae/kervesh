@@ -191,23 +191,24 @@ impl FileType {
 }
 
 fn decode_image(bytes: &[u8]) -> ColorImage {
-    let img = image::load_from_memory(bytes)
-        .expect("Valid PNG asset")
-        .to_rgba8();
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return ColorImage::new([1, 1], vec![Color32::TRANSPARENT]);
+    };
+    let img = img.to_rgba8();
     let (width, height) = img.dimensions();
     ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &img.into_raw())
 }
 
 pub fn ui_icon_texture(ctx: &Context, icon: UiIcon, dark: bool) -> TextureHandle {
     let name = format!("ui_icon_{:?}_{}", icon, if dark { "dark" } else { "light" });
-    ctx.load_texture(
+    cached_texture(
+        ctx,
         name,
-        decode_image(if dark {
+        if dark {
             icon.dark_png_bytes()
         } else {
             icon.light_png_bytes()
-        }),
-        TextureOptions::LINEAR,
+        },
     )
 }
 
@@ -217,14 +218,14 @@ pub fn file_icon_texture(ctx: &Context, file_type: FileType, dark: bool) -> Text
         file_type,
         if dark { "dark" } else { "light" }
     );
-    ctx.load_texture(
+    cached_texture(
+        ctx,
         name,
-        decode_image(if dark {
+        if dark {
             file_type.dark_png_bytes()
         } else {
             file_type.light_png_bytes()
-        }),
-        TextureOptions::LINEAR,
+        },
     )
 }
 
@@ -235,13 +236,22 @@ pub fn monogram_texture(ctx: &Context, dark: bool) -> TextureHandle {
     } else {
         include_bytes!("../../../assets/brand/png/kervesh-mark-black-256.png")
     };
-    ctx.load_texture(name, decode_image(bytes), TextureOptions::LINEAR)
+    cached_texture(ctx, name, bytes)
 }
 
-pub fn render_monogram(ui: &mut Ui, size: f32, color: Color32) -> Response {
+fn cached_texture(ctx: &Context, name: String, bytes: &'static [u8]) -> TextureHandle {
+    let id = egui::Id::new(("kervesh_asset", name.as_str()));
+    if let Some(texture) = ctx.data(|data| data.get_temp::<TextureHandle>(id)) {
+        return texture;
+    }
+    let texture = ctx.load_texture(name, decode_image(bytes), TextureOptions::LINEAR);
+    ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
+    texture
+}
+
+pub fn render_monogram(ui: &mut Ui, size: f32, dark: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     if ui.is_rect_visible(rect) {
-        let dark = color.r() > 100;
         let texture = monogram_texture(ui.ctx(), dark);
         let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
@@ -249,24 +259,22 @@ pub fn render_monogram(ui: &mut Ui, size: f32, color: Color32) -> Response {
     response
 }
 
-pub fn paint_monogram(painter: &Painter, rect: Rect, color: Color32) {
-    let dark = color.r() > 100;
+pub fn paint_monogram(painter: &Painter, rect: Rect, dark: bool) {
     let texture = monogram_texture(painter.ctx(), dark);
     let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     painter.image(texture.id(), rect, uv, Color32::WHITE);
 }
 
-pub fn render_file_icon(ui: &mut Ui, file_type: FileType, color: Color32) -> Response {
+pub fn render_file_icon(ui: &mut Ui, file_type: FileType, dark: bool) -> Response {
     let size = Vec2::splat(16.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     if ui.is_rect_visible(rect) {
-        paint_file_icon(ui.painter(), rect, file_type, color);
+        paint_file_icon(ui.painter(), rect, file_type, dark);
     }
     response
 }
 
-pub fn paint_file_icon(painter: &Painter, rect: Rect, file_type: FileType, color: Color32) {
-    let dark = color.r() > 100;
+pub fn paint_file_icon(painter: &Painter, rect: Rect, file_type: FileType, dark: bool) {
     let texture = file_icon_texture(painter.ctx(), file_type, dark);
     let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     painter.image(texture.id(), rect, uv, Color32::WHITE);
@@ -437,4 +445,74 @@ pub fn paint_arrow_up(painter: &Painter, pos: egui::Pos2, size: f32, color: Colo
         color,
         egui::Stroke::NONE,
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileType, UiIcon};
+
+    #[test]
+    fn bundled_icon_assets_are_valid_pngs() {
+        let ui_icons = [
+            UiIcon::NewConnection,
+            UiIcon::Split,
+            UiIcon::Sftp,
+            UiIcon::Monitor,
+            UiIcon::Settings,
+            UiIcon::Back,
+            UiIcon::Forward,
+            UiIcon::Parent,
+            UiIcon::Refresh,
+            UiIcon::Upload,
+            UiIcon::NewFile,
+            UiIcon::NewFolder,
+            UiIcon::Download,
+            UiIcon::Copy,
+            UiIcon::Rename,
+            UiIcon::Permissions,
+            UiIcon::Delete,
+            UiIcon::Pause,
+            UiIcon::Cancel,
+            UiIcon::Retry,
+            UiIcon::Terminal,
+            UiIcon::Host,
+            UiIcon::Hosts,
+            UiIcon::Inspector,
+            UiIcon::Search,
+            UiIcon::Bookmark,
+            UiIcon::Connect,
+            UiIcon::Disconnect,
+            UiIcon::Files,
+            UiIcon::Transfer,
+        ];
+        let file_types = [
+            FileType::Folder,
+            FileType::Symlink,
+            FileType::GenericFile,
+            FileType::Pdf,
+            FileType::Text,
+            FileType::Markdown,
+            FileType::Rust,
+            FileType::Shell,
+            FileType::Config,
+            FileType::Json,
+            FileType::Image,
+            FileType::Archive,
+            FileType::Database,
+            FileType::Key,
+            FileType::Certificate,
+            FileType::Executable,
+            FileType::Code,
+            FileType::Log,
+        ];
+
+        for icon in ui_icons {
+            assert!(image::load_from_memory(icon.dark_png_bytes()).is_ok());
+            assert!(image::load_from_memory(icon.light_png_bytes()).is_ok());
+        }
+        for file_type in file_types {
+            assert!(image::load_from_memory(file_type.dark_png_bytes()).is_ok());
+            assert!(image::load_from_memory(file_type.light_png_bytes()).is_ok());
+        }
+    }
 }

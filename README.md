@@ -11,12 +11,12 @@ Implemented in pure Rust with zero Electron, zero browser runtimes, zero cloud d
 ## Highlights
 
 - **Multi-Protocol Connectivity**: Native SSH (with multi-hop Bastion jump host cascading and `~/.ssh/config` import), Telnet, Serial UART ports, FTP/FTPS, and RDP/VNC remote desktop orchestrators.
-- **High-Performance Terminal**: Alacritty VT/ANSI state machine, GPU text rasterization, true color support, customizable typography with fallback chains, split panes (Vertical/Horizontal), and broadcast command execution.
+- **High-Performance Terminal**: Alacritty VT/ANSI state machine, GPU text rasterization, true color support, customizable typography with fallback chains, mirrored read-only split views (Vertical/Horizontal), and broadcast command execution.
 - **SFTP File Browser & Remote Editor**: Visual remote file manager with streaming transfers, directory synchronization (rsync-style delta engine), remote grep search, and built-in code editor with syntax highlighting and atomic saving.
 - **Network Routing & Tunnels**: Visual SSH port forwarding dashboard (Local `-L`, Remote `-R`), in-app SOCKS5 dynamic forwarding proxy (`-D`), and X11 forwarding with `MIT-MAGIC-COOKIE-1` authentication.
 - **Sysadmin & DevOps Toolbox**: Docker container manager, systemd service unit manager with `journalctl` log viewer, remote process manager with POSIX signal dispatching, and network diagnostics hub (Ping, Traceroute, Port Scan, DNS).
 - **Security & Cryptography**: Zero-knowledge encrypted vault (PBKDF2-HMAC-SHA256 + AES-256-GCM AEAD), Ed25519/RSA SSH keypair generator with `ssh-copy-id` deployment, and platform keyring integration.
-- **Terminal Intelligence**: Multi-format session recording (`.cast`, `.txt`, `.raw`), searchable command audit history, and customizable trigger-action rules engine.
+- **Terminal Intelligence**: Multi-format session recording (`.cast`, `.txt`, `.raw`) and customizable trigger-action rules engine. Raw PTY input is not persisted as command history because it can contain passwords and control bytes.
 - **Workspace Personalization**: Visual theme designer with ANSI palette editor, built-in presets (Dracula, Nord, Tokyo Night, Catppuccin, Gruvbox, One Dark, etc.), live terminal preview, and real-time WCAG AA contrast ratio checking.
 
 ---

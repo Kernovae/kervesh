@@ -3,6 +3,43 @@ use kervesh_core::{
     EncryptedVault, GeneratedKeypair, Host, KeyAlgorithm, LocalSshKeyInfo, Store, VaultCategory,
     VaultEntry, discover_local_ssh_keys,
 };
+use std::sync::mpsc::{self, Receiver, Sender};
+use tokio::runtime::Runtime;
+
+enum VaultTaskResult {
+    Unlock {
+        generation: u64,
+        result: Result<EncryptedVault, String>,
+    },
+    Create {
+        generation: u64,
+        result: Result<EncryptedVault, String>,
+    },
+    Save {
+        generation: u64,
+        result: Result<EncryptedVault, String>,
+    },
+    Delete {
+        generation: u64,
+        result: Result<EncryptedVault, String>,
+    },
+    Generate {
+        generation: u64,
+        result: Result<GeneratedKeypair, String>,
+    },
+}
+
+impl VaultTaskResult {
+    fn generation(&self) -> u64 {
+        match self {
+            Self::Unlock { generation, .. }
+            | Self::Create { generation, .. }
+            | Self::Save { generation, .. }
+            | Self::Delete { generation, .. }
+            | Self::Generate { generation, .. } => *generation,
+        }
+    }
+}
 
 pub enum VaultUiAction {
     DeployKeyToHost { host_id: String, public_key: String },
@@ -18,6 +55,7 @@ pub struct VaultUi {
     pub new_master_password: String,
     pub unlocked_vault: Option<EncryptedVault>,
     pub vault_error: Option<String>,
+    vault_exists: Option<bool>,
     pub vault_search: String,
     pub selected_category: Option<VaultCategory>,
     pub editing_entry: Option<VaultEntry>,
@@ -32,6 +70,10 @@ pub struct VaultUi {
     pub local_keys: Vec<LocalSshKeyInfo>,
     pub deploy_host_id: Option<String>,
     pub deploy_target_key: Option<String>,
+    task_tx: Sender<VaultTaskResult>,
+    task_rx: Receiver<VaultTaskResult>,
+    generation: u64,
+    task_pending: bool,
 }
 
 impl Default for VaultUi {
@@ -42,6 +84,7 @@ impl Default for VaultUi {
 
 impl VaultUi {
     pub fn new() -> Self {
+        let (task_tx, task_rx) = mpsc::channel();
         Self {
             open: false,
             selected_tab: 0,
@@ -49,6 +92,7 @@ impl VaultUi {
             new_master_password: String::new(),
             unlocked_vault: None,
             vault_error: None,
+            vault_exists: None,
             vault_search: String::new(),
             selected_category: None,
             editing_entry: None,
@@ -61,6 +105,10 @@ impl VaultUi {
             local_keys: Vec::new(),
             deploy_host_id: None,
             deploy_target_key: None,
+            task_tx,
+            task_rx,
+            generation: 0,
+            task_pending: false,
         }
     }
 
@@ -69,16 +117,199 @@ impl VaultUi {
         self.local_keys = discover_local_ssh_keys();
     }
 
+    pub fn refresh_vault_state(&mut self, store: &Store) {
+        self.vault_exists = Some(store.load_vault_blob().unwrap_or(None).is_some());
+    }
+
+    fn begin_operation(&mut self) -> Option<u64> {
+        if self.task_pending {
+            return None;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.task_pending = true;
+        Some(self.generation)
+    }
+
+    fn launch_operation(
+        &mut self,
+        runtime: &Runtime,
+        ctx: &egui::Context,
+        task: impl FnOnce(u64) -> VaultTaskResult + Send + 'static,
+    ) -> bool {
+        let Some(generation) = self.begin_operation() else {
+            return false;
+        };
+        let sender = self.task_tx.clone();
+        let wake = ctx.clone();
+        runtime.spawn_blocking(move || {
+            let result = task(generation);
+            let _ = sender.send(result);
+            wake.request_repaint();
+        });
+        true
+    }
+
+    fn invalidate_operations(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.task_pending = false;
+        while self.task_rx.try_recv().is_ok() {}
+    }
+
+    fn poll_operations(&mut self) {
+        while let Ok(task) = self.task_rx.try_recv() {
+            if !self.open || !self.task_pending || task.generation() != self.generation {
+                continue;
+            }
+            self.task_pending = false;
+            match task {
+                VaultTaskResult::Unlock { result, .. } => match result {
+                    Ok(vault) => {
+                        self.unlocked_vault = Some(vault);
+                        self.vault_error = None;
+                    }
+                    Err(error) => self.vault_error = Some(error),
+                },
+                VaultTaskResult::Create { result, .. } | VaultTaskResult::Delete { result, .. } => {
+                    match result {
+                        Ok(vault) => {
+                            self.unlocked_vault = Some(vault);
+                            self.vault_exists = Some(true);
+                            self.vault_error = None;
+                        }
+                        Err(error) => self.vault_error = Some(error),
+                    }
+                }
+                VaultTaskResult::Save { result, .. } => match result {
+                    Ok(vault) => {
+                        self.unlocked_vault = Some(vault);
+                        self.vault_exists = Some(true);
+                        self.vault_error = None;
+                        self.editing_entry = None;
+                    }
+                    Err(error) => self.vault_error = Some(error),
+                },
+                VaultTaskResult::Generate { result, .. } => match result {
+                    Ok(key) => {
+                        self.generated_keys.push(key);
+                        self.gen_error = None;
+                    }
+                    Err(error) => self.gen_error = Some(error),
+                },
+            }
+        }
+    }
+
+    fn start_unlock(&mut self, runtime: &Runtime, ctx: &egui::Context, store: &Store) {
+        let store = store.clone();
+        let password = zeroize::Zeroizing::new(self.master_password_input.clone());
+        self.launch_operation(runtime, ctx, move |generation| {
+            let result = store
+                .load_vault_blob()
+                .map_err(|error| format!("Could not read vault: {error:#}"))
+                .and_then(|blob| blob.ok_or_else(|| "Vault is not initialized".to_string()))
+                .and_then(|blob| {
+                    EncryptedVault::unlock(&blob, password.as_str())
+                        .map_err(|error| format!("{error:#}"))
+                });
+            VaultTaskResult::Unlock { generation, result }
+        });
+    }
+
+    fn start_create(&mut self, runtime: &Runtime, ctx: &egui::Context, store: &Store) {
+        let store = store.clone();
+        let password = zeroize::Zeroizing::new(self.master_password_input.clone());
+        self.launch_operation(runtime, ctx, move |generation| {
+            let vault = EncryptedVault::empty();
+            let result = vault
+                .encrypt_to_blob(password.as_str())
+                .map_err(|error| format!("{error:#}"))
+                .and_then(|blob| {
+                    store
+                        .save_vault_blob(&blob)
+                        .map_err(|error| format!("Could not save vault: {error:#}"))
+                })
+                .map(|()| vault);
+            VaultTaskResult::Create { generation, result }
+        });
+    }
+
+    fn start_save_vault(
+        &mut self,
+        runtime: &Runtime,
+        ctx: &egui::Context,
+        store: &Store,
+        vault: EncryptedVault,
+    ) {
+        let store = store.clone();
+        let password = zeroize::Zeroizing::new(self.master_password_input.clone());
+        self.launch_operation(runtime, ctx, move |generation| {
+            let result = vault
+                .encrypt_to_blob(password.as_str())
+                .map_err(|error| format!("{error:#}"))
+                .and_then(|blob| {
+                    store
+                        .save_vault_blob(&blob)
+                        .map_err(|error| format!("Could not save vault: {error:#}"))
+                })
+                .map(|()| vault);
+            VaultTaskResult::Save { generation, result }
+        });
+    }
+
+    fn start_delete_entry(
+        &mut self,
+        runtime: &Runtime,
+        ctx: &egui::Context,
+        store: &Store,
+        vault: EncryptedVault,
+    ) {
+        let store = store.clone();
+        let password = zeroize::Zeroizing::new(self.master_password_input.clone());
+        self.launch_operation(runtime, ctx, move |generation| {
+            let result = vault
+                .encrypt_to_blob(password.as_str())
+                .map_err(|error| format!("{error:#}"))
+                .and_then(|blob| {
+                    store
+                        .save_vault_blob(&blob)
+                        .map_err(|error| format!("Could not save vault: {error:#}"))
+                })
+                .map(|()| vault);
+            VaultTaskResult::Delete { generation, result }
+        });
+    }
+
+    fn start_generate_key(&mut self, runtime: &Runtime, ctx: &egui::Context, store: &Store) {
+        let store = store.clone();
+        let algorithm = self.key_algo;
+        let comment = self.key_comment.clone();
+        let passphrase = (!self.key_passphrase.is_empty()).then(|| self.key_passphrase.clone());
+        self.launch_operation(runtime, ctx, move |generation| {
+            let result = GeneratedKeypair::generate(algorithm, &comment, passphrase.as_deref())
+                .map_err(|error| format!("{error:#}"))
+                .and_then(|key| {
+                    store
+                        .save_generated_key(&key)
+                        .map(|()| key)
+                        .map_err(|error| format!("Could not save generated key: {error:#}"))
+                });
+            VaultTaskResult::Generate { generation, result }
+        });
+    }
+
     pub fn render(
         &mut self,
         ctx: &egui::Context,
+        runtime: &Runtime,
         store: &Store,
         hosts: &[Host],
         action: &mut Option<VaultUiAction>,
     ) {
         if !self.open {
+            self.invalidate_operations();
             return;
         }
+        self.poll_operations();
 
         let mut is_open = self.open;
         egui::Window::new("🔐 Security, Encrypted Vault & Key Inventory")
@@ -112,7 +343,9 @@ impl VaultUi {
                                 )
                                 .clicked()
                             {
+                                self.invalidate_operations();
                                 self.unlocked_vault = None;
+                                self.editing_entry = None;
                                 self.master_password_input.clear();
                             }
                         });
@@ -122,30 +355,46 @@ impl VaultUi {
                 ui.separator();
 
                 match self.selected_tab {
-                    0 => self.render_vault_tab(ui, store, action),
-                    1 => self.render_keys_tab(ui, store, hosts, action),
+                    0 => self.render_vault_tab(ui, ctx, runtime, store, action),
+                    1 => self.render_keys_tab(ui, ctx, runtime, store, hosts, action),
                     _ => {}
                 }
             });
 
         self.open = is_open;
+        if !self.open {
+            self.invalidate_operations();
+            self.unlocked_vault = None;
+            self.editing_entry = None;
+            self.master_password_input.clear();
+        }
     }
 
     fn render_vault_tab(
         &mut self,
         ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        runtime: &Runtime,
         store: &Store,
         action: &mut Option<VaultUiAction>,
     ) {
         if self.unlocked_vault.is_some() {
-            self.render_unlocked_vault(ui, store, action);
+            self.render_unlocked_vault(ui, ctx, runtime, store, action);
         } else {
-            self.render_locked_vault(ui, store);
+            self.render_locked_vault(ui, ctx, runtime, store);
         }
     }
 
-    fn render_locked_vault(&mut self, ui: &mut egui::Ui, store: &Store) {
-        let has_vault = store.load_vault_blob().unwrap_or(None).is_some();
+    fn render_locked_vault(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        runtime: &Runtime,
+        store: &Store,
+    ) {
+        let has_vault = *self
+            .vault_exists
+            .get_or_insert_with(|| store.load_vault_blob().unwrap_or(None).is_some());
 
         ui.vertical_centered(|ui| {
             ui.add_space(40.0);
@@ -177,38 +426,40 @@ impl VaultUi {
             }
 
             ui.add_space(12.0);
+            let unlock_clicked = if has_vault {
+                ui.add_enabled(
+                    !self.task_pending,
+                    egui::Button::new(RichText::new(" 🔓 Unlock Vault ").strong()),
+                )
+                .clicked()
+            } else {
+                false
+            };
+            let create_clicked = if !has_vault {
+                ui.add_enabled(
+                    !self.task_pending,
+                    egui::Button::new(RichText::new(" 🛡 Create & Encrypt New Vault ").strong()),
+                )
+                .clicked()
+            } else {
+                false
+            };
+            if self.task_pending {
+                ui.spinner();
+                ui.label("Working in background…");
+            }
             if has_vault
-                && (ui.button(RichText::new(" 🔓 Unlock Vault ").strong()).clicked()
+                && !self.task_pending
+                && (unlock_clicked
                     || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))))
                 && !self.master_password_input.is_empty()
-                && let Ok(Some(blob)) = store.load_vault_blob()
             {
-                match EncryptedVault::unlock(&blob, &self.master_password_input) {
-                    Ok(v) => {
-                        self.unlocked_vault = Some(v);
-                        self.vault_error = None;
-                    }
-                    Err(e) => {
-                        self.vault_error = Some(e.to_string());
-                    }
-                }
+                self.start_unlock(runtime, ctx, store);
             } else if !has_vault
-                && ui
-                    .button(RichText::new(" 🛡 Create & Encrypt New Vault ").strong())
-                    .clicked()
+                && create_clicked
                 && !self.master_password_input.is_empty()
             {
-                let vault = EncryptedVault::empty();
-                match vault.encrypt_to_blob(&self.master_password_input) {
-                    Ok(blob) => {
-                        let _ = store.save_vault_blob(&blob);
-                        self.unlocked_vault = Some(vault);
-                        self.vault_error = None;
-                    }
-                    Err(e) => {
-                        self.vault_error = Some(e.to_string());
-                    }
-                }
+                self.start_create(runtime, ctx, store);
             }
         });
     }
@@ -216,6 +467,8 @@ impl VaultUi {
     fn render_unlocked_vault(
         &mut self,
         ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        runtime: &Runtime,
         store: &Store,
         action: &mut Option<VaultUiAction>,
     ) {
@@ -282,24 +535,32 @@ impl VaultUi {
 
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button(RichText::new(" Save Secret ").strong()).clicked() {
+                if ui
+                    .add_enabled(
+                        !self.task_pending,
+                        egui::Button::new(RichText::new(" Save Secret ").strong()),
+                    )
+                    .clicked()
+                {
                     save_entry = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui
+                    .add_enabled(!self.task_pending, egui::Button::new("Cancel"))
+                    .clicked()
+                {
                     cancel_entry = true;
                 }
             });
 
             if save_entry {
-                if let Some(v) = &mut self.unlocked_vault {
-                    if v.get_entry(&entry.id).is_some() {
-                        v.update_entry(entry);
+                if let Some(mut vault) = self.unlocked_vault.clone() {
+                    if vault.get_entry(&entry.id).is_some() {
+                        vault.update_entry(entry.clone());
                     } else {
-                        v.add_entry(entry);
+                        vault.add_entry(entry.clone());
                     }
-                    if let Ok(blob) = v.encrypt_to_blob(&self.master_password_input) {
-                        let _ = store.save_vault_blob(&blob);
-                    }
+                    self.editing_entry = Some(entry);
+                    self.start_save_vault(runtime, ctx, store, vault);
                 }
             } else if !cancel_entry {
                 self.editing_entry = Some(entry);
@@ -319,7 +580,10 @@ impl VaultUi {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .button(RichText::new(" + Add Secret ").strong())
+                    .add_enabled(
+                        !self.task_pending,
+                        egui::Button::new(RichText::new(" + Add Secret ").strong()),
+                    )
                     .clicked()
                 {
                     self.editing_entry = Some(VaultEntry::new(
@@ -383,12 +647,20 @@ impl VaultUi {
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
-                                .button(RichText::new("🗑").color(Color32::from_rgb(235, 87, 87)))
+                                .add_enabled(
+                                    !self.task_pending,
+                                    egui::Button::new(
+                                        RichText::new("🗑").color(Color32::from_rgb(235, 87, 87)),
+                                    ),
+                                )
                                 .clicked()
                             {
                                 entry_to_delete = Some(e.id.clone());
                             }
-                            if ui.button("✏ Edit").clicked() {
+                            if ui
+                                .add_enabled(!self.task_pending, egui::Button::new("✏ Edit"))
+                                .clicked()
+                            {
                                 entry_to_edit = Some(e.clone());
                             }
                             if ui.button("📋 Copy Secret").clicked() {
@@ -423,12 +695,10 @@ impl VaultUi {
         });
 
         if let Some(id) = entry_to_delete
-            && let Some(v) = &mut self.unlocked_vault
+            && let Some(mut vault) = self.unlocked_vault.clone()
         {
-            v.delete_entry(&id);
-            if let Ok(blob) = v.encrypt_to_blob(&self.master_password_input) {
-                let _ = store.save_vault_blob(&blob);
-            }
+            vault.delete_entry(&id);
+            self.start_delete_entry(runtime, ctx, store, vault);
         }
         if let Some(e) = entry_to_edit {
             self.editing_entry = Some(e);
@@ -438,6 +708,8 @@ impl VaultUi {
     fn render_keys_tab(
         &mut self,
         ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        runtime: &Runtime,
         store: &Store,
         hosts: &[Host],
         action: &mut Option<VaultUiAction>,
@@ -498,27 +770,18 @@ impl VaultUi {
 
                 ui.add_space(6.0);
                 if ui
-                    .button(RichText::new(" 🔑 Generate Keypair ").strong())
+                    .add_enabled(
+                        !self.task_pending,
+                        egui::Button::new(RichText::new(" 🔑 Generate Keypair ").strong()),
+                    )
                     .clicked()
                 {
-                    let pass = if self.key_passphrase.is_empty() {
-                        None
-                    } else {
-                        Some(self.key_passphrase.as_str())
-                    };
-
-                    match GeneratedKeypair::generate(self.key_algo, &self.key_comment, pass) {
-                        Ok(kp) => {
-                            let _ = store.save_generated_key(&kp);
-                            self.refresh_keys(store);
-                            self.gen_error = None;
-                        }
-                        Err(e) => {
-                            self.gen_error = Some(e.to_string());
-                        }
-                    }
+                    self.start_generate_key(runtime, ctx, store);
                 }
-
+                if self.task_pending {
+                    ui.spinner();
+                    ui.label("Generating in background…");
+                }
                 if let Some(err) = &self.gen_error {
                     ui.label(RichText::new(err).color(Color32::from_rgb(235, 87, 87)));
                 }
@@ -643,5 +906,51 @@ impl VaultUi {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VaultTaskResult, VaultUi};
+    use kervesh_core::EncryptedVault;
+
+    #[test]
+    fn stale_result_cannot_reopen_vault_after_invalidation() {
+        let mut ui = VaultUi::new();
+        ui.open = true;
+        let old_generation = ui.begin_operation().expect("operation should start");
+
+        ui.invalidate_operations();
+        ui.open = true;
+        assert!(!ui.task_pending);
+
+        ui.task_tx
+            .send(VaultTaskResult::Unlock {
+                generation: old_generation,
+                result: Ok(EncryptedVault::empty()),
+            })
+            .expect("result channel should be open");
+        ui.poll_operations();
+
+        assert!(ui.unlocked_vault.is_none());
+        assert!(!ui.task_pending);
+    }
+
+    #[test]
+    fn current_generation_result_is_applied() {
+        let mut ui = VaultUi::new();
+        ui.open = true;
+        let generation = ui.begin_operation().expect("operation should start");
+
+        ui.task_tx
+            .send(VaultTaskResult::Unlock {
+                generation,
+                result: Ok(EncryptedVault::empty()),
+            })
+            .expect("result channel should be open");
+        ui.poll_operations();
+
+        assert!(ui.unlocked_vault.is_some());
+        assert!(!ui.task_pending);
     }
 }

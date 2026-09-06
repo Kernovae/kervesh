@@ -276,13 +276,31 @@ async fn run(
                             }
                             Err(e) => Err(e),
                         },
-                        FileOperation::Write(path, content) => {
-                            match write_file(&sftp, &path, &content).await {
+                        FileOperation::Write(path, content, operation_id) => {
+                            match crate::sftp::write_file_atomic(
+                                &sftp,
+                                &path,
+                                &content,
+                                operation_id,
+                            )
+                            .await
+                            {
                                 Ok(()) => {
-                                    file_events.send(Event::OperationComplete).await;
+                                    file_events
+                                        .send(Event::FileWriteComplete { path, operation_id })
+                                        .await;
                                     Ok(())
                                 }
-                                Err(e) => Err(e),
+                                Err(e) => {
+                                    file_events
+                                        .send(Event::FileWriteError {
+                                            path,
+                                            operation_id,
+                                            error: e.to_string(),
+                                        })
+                                        .await;
+                                    Err(e)
+                                }
                             }
                         }
                         action => {
@@ -326,7 +344,29 @@ async fn run(
                 Some(Command::Input(bytes))=>if input_tx.try_send(bytes).is_err(){events.send(Event::Error("Terminal input queue full or closed".into())).await;},
                 Some(Command::Resize(cols,rows))=>shell.window_change(cols,rows,0,0).await?,
                 Some(Command::PauseMonitor(value))=>paused.store(value,Ordering::Relaxed),
-                Some(Command::File(op))=>if files_tx.try_send(op).is_err(){events.send(Event::Error("SFTP unavailable or queue full".into())).await;},
+                Some(Command::File(op)) => {
+                    let write = match &op {
+                        FileOperation::Write(path, _, operation_id) => {
+                            Some((path.clone(), *operation_id))
+                        }
+                        _ => None,
+                    };
+                    if files_tx.try_send(op).is_err() {
+                        if let Some((path, operation_id)) = write {
+                            events
+                                .send(Event::FileWriteError {
+                                    path,
+                                    operation_id,
+                                    error: "SFTP unavailable or queue full".into(),
+                                })
+                                .await;
+                        } else {
+                            events
+                                .send(Event::Error("SFTP unavailable or queue full".into()))
+                                .await;
+                        }
+                    }
+                },
                 Some(Command::Transfer(request))=>if let Err(e)=transfer_tx.try_send(request){events.send(Event::Transfer {id:e.into_inner().id,done:0,total:0,speed:0.0,state:TransferState::Failed("Transfer queue unavailable or full".into())}).await;},
                 Some(Command::ProcessList) => {
                     let proc_remote = remote.clone();

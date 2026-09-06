@@ -48,6 +48,7 @@ pub(crate) struct Tab {
     pub path: String,
     pub path_input: String,
     pub history: Vec<String>,
+    pub forward: Vec<String>,
     pub entries: Vec<RemoteEntry>,
     pub filter: String,
     pub selected: Option<RemoteEntry>,
@@ -59,6 +60,7 @@ pub(crate) struct Tab {
     pub error: Option<String>,
     pub transfers: Vec<TransferRow>,
     pub editor: Option<crate::editor::RemoteEditor>,
+    pub close_after_editor: bool,
     pub connected_at: Option<String>,
     pub alerts: Vec<kervesh_core::MonitorAlert>,
     pub cpu_history: Vec<f32>,
@@ -104,6 +106,21 @@ pub(crate) struct FileDialog {
     pub kind: FileDialogKind,
     pub name: String,
     pub error: Option<String>,
+}
+
+type TunnelStartResult = (
+    String,
+    u64,
+    std::result::Result<kervesh_ssh::ActiveTunnel, String>,
+);
+
+fn finish_tunnel_attempt(starting: &mut HashMap<String, u64>, id: &str, attempt: u64) -> bool {
+    if starting.get(id).copied() == Some(attempt) {
+        starting.remove(id);
+        true
+    } else {
+        false
+    }
 }
 
 pub(crate) enum FileDialogKind {
@@ -177,6 +194,10 @@ pub struct App {
     pub(crate) tunnels_ui: crate::tunnels::TunnelsUi,
     pub(crate) tunnels_open: bool,
     pub(crate) active_tunnels: HashMap<String, kervesh_ssh::ActiveTunnel>,
+    tunnel_start_tx: std_mpsc::Sender<TunnelStartResult>,
+    tunnel_start_rx: std_mpsc::Receiver<TunnelStartResult>,
+    tunnel_starting: HashMap<String, u64>,
+    next_tunnel_attempt: u64,
     pub(crate) workspaces: Vec<kervesh_core::SessionWorkspace>,
     pub(crate) workspaces_ui: crate::workspaces_ui::WorkspacesUi,
     pub(crate) workspaces_open: bool,
@@ -205,6 +226,7 @@ impl App {
         let trigger_rules = store.triggers().unwrap_or_default();
         let trigger_engine = kervesh_core::TriggerEngine::new(&trigger_rules);
         let (secret_tx, secret_rx) = std_mpsc::channel();
+        let (tunnel_start_tx, tunnel_start_rx) = std_mpsc::channel();
         Ok(Self {
             store,
             runtime,
@@ -238,6 +260,10 @@ impl App {
             tunnels_ui: crate::tunnels::TunnelsUi::default(),
             tunnels_open: false,
             active_tunnels: HashMap::new(),
+            tunnel_start_tx,
+            tunnel_start_rx,
+            tunnel_starting: HashMap::new(),
+            next_tunnel_attempt: 0,
             workspaces,
             workspaces_ui: crate::workspaces_ui::WorkspacesUi::default(),
             workspaces_open: false,
@@ -312,10 +338,19 @@ impl App {
         }
     }
 
-    pub(crate) fn start_tunnel(&mut self, config: kervesh_core::TunnelConfig) {
+    pub(crate) fn start_tunnel(&mut self, config: kervesh_core::TunnelConfig, ctx: &egui::Context) {
+        if self.active_tunnels.contains_key(&config.id)
+            || self.tunnel_starting.contains_key(&config.id)
+        {
+            return;
+        }
+        self.next_tunnel_attempt = self.next_tunnel_attempt.wrapping_add(1);
+        let attempt = self.next_tunnel_attempt;
+        self.tunnel_starting.insert(config.id.clone(), attempt);
         if config.kind != kervesh_core::TunnelKind::Remote
             && crate::tunnels::is_port_in_use(&config.bind_addr, config.bind_port)
         {
+            self.tunnel_starting.remove(&config.id);
             self.tunnels_ui.error_message = Some(format!(
                 "Port {} is already in use on {}",
                 config.bind_port, config.bind_addr
@@ -326,36 +361,53 @@ impl App {
         let host = match self.hosts.iter().find(|h| h.id == config.host_id).cloned() {
             Some(h) => h,
             None => {
+                self.tunnel_starting.remove(&config.id);
                 self.tunnels_ui.error_message = Some("Host profile not found".into());
                 return;
             }
         };
 
-        let secret = secrets::load(&host.id).ok().flatten().unwrap_or_default();
-        let credentials = Credentials {
-            secret,
-            remember: false,
-        };
-
         let store = self.store.clone();
         let (tx, _rx) = tokio::sync::mpsc::channel(32);
-        let sink = kervesh_ssh::EventSink::new(tx, Arc::new(|| {}));
+        let wake = ctx.clone();
+        let result_wake = ctx.clone();
+        let sink = kervesh_ssh::EventSink::new(tx, Arc::new(move || wake.request_repaint()));
         let tid = config.id.clone();
         let cfg = config.clone();
-
-        match self.runtime.block_on(async {
-            kervesh_ssh::ActiveTunnel::start_for_host(&host, &credentials, store, sink, cfg).await
-        }) {
-            Ok(active) => {
-                self.active_tunnels.insert(tid, active);
-            }
-            Err(e) => {
-                self.tunnels_ui.error_message = Some(format!("Failed starting tunnel: {e:#}"));
-            }
-        }
+        let result_tx = self.tunnel_start_tx.clone();
+        self.runtime.spawn(async move {
+            let host_id = host.id.clone();
+            let secret = match tokio::task::spawn_blocking(move || {
+                secrets::load(&host_id).ok().flatten().unwrap_or_default()
+            })
+            .await
+            {
+                Ok(secret) => secret,
+                Err(error) => {
+                    let _ = result_tx.send((
+                        tid,
+                        attempt,
+                        Err(format!("Credential lookup failed: {error}")),
+                    ));
+                    result_wake.request_repaint();
+                    return;
+                }
+            };
+            let credentials = Credentials {
+                secret,
+                remember: false,
+            };
+            let result =
+                kervesh_ssh::ActiveTunnel::start_for_host(&host, &credentials, store, sink, cfg)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+            let _ = result_tx.send((tid, attempt, result));
+            result_wake.request_repaint();
+        });
     }
 
     pub(crate) fn stop_tunnel(&mut self, id: &str) {
+        self.tunnel_starting.remove(id);
         if let Some(tunnel) = self.active_tunnels.remove(id) {
             tunnel.stop();
         }
@@ -416,6 +468,7 @@ impl App {
             path: ".".into(),
             path_input: ".".into(),
             history: Vec::new(),
+            forward: Vec::new(),
             entries: Vec::new(),
             filter: String::new(),
             selected: None,
@@ -427,6 +480,7 @@ impl App {
             error: None,
             transfers: Vec::new(),
             editor: None,
+            close_after_editor: false,
             connected_at: None,
             alerts: Vec::new(),
             cpu_history: Vec::new(),
@@ -440,9 +494,24 @@ impl App {
     }
 
     pub(crate) fn send(&mut self, id: u64, command: Command) {
+        let write = match &command {
+            Command::File(FileOperation::Write(path, _, operation_id)) => {
+                Some((path.clone(), *operation_id))
+            }
+            _ => None,
+        };
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
             && tab.session.commands.try_send(command).is_err()
         {
+            if let Some((path, operation_id)) = write
+                && let Some(editor) = &mut tab.editor
+            {
+                editor.fail_save(
+                    &path,
+                    operation_id,
+                    "Session unavailable or command queue full".into(),
+                );
+            }
             tab.error = Some("Session unavailable or command queue full; retry the action".into());
         }
     }
@@ -461,8 +530,25 @@ impl App {
                 }
             }
         }
+        while let Ok((id, attempt, result)) = self.tunnel_start_rx.try_recv() {
+            if finish_tunnel_attempt(&mut self.tunnel_starting, &id, attempt) {
+                match result {
+                    Ok(active) => {
+                        self.active_tunnels.insert(id, active);
+                    }
+                    Err(error) => {
+                        self.tunnels_ui.error_message =
+                            Some(format!("Failed starting tunnel: {error}"));
+                    }
+                }
+            } else if let Ok(active) = result {
+                // A stale attempt must never replace a newer Start request.
+                active.stop();
+            }
+        }
         let mut reload = false;
         let mut auto_start_tunnels = Vec::new();
+        let mut close_tabs = Vec::new();
         for tab in &mut self.tabs {
             for _ in 0..128 {
                 let Ok(event) = tab.session.events.try_recv() else {
@@ -542,6 +628,14 @@ impl App {
                         }
                     }
                     Event::Disconnected(reason) => {
+                        if let Some(editor) = &mut tab.editor
+                            && let Some((path, operation_id)) = editor
+                                .pending_save()
+                                .map(|(path, operation_id)| (path.to_owned(), operation_id))
+                        {
+                            editor.fail_save(&path, operation_id, reason.clone());
+                        }
+                        tab.close_after_editor = false;
                         if tab.connected && tab.host.auto_reconnect && tab.retries < 3 {
                             tab.retry_at = Some(Instant::now() + Duration::from_secs(3));
                         }
@@ -560,12 +654,6 @@ impl App {
                         }
                     }
                     Event::Error(error) => {
-                        if let Some(editor) = &mut tab.editor
-                            && editor.saving
-                        {
-                            editor.saving = false;
-                            editor.error = Some(error.clone());
-                        }
                         tab.error = Some(error);
                     }
                     Event::Capabilities(capabilities) => tab.capabilities = Some(capabilities),
@@ -617,8 +705,48 @@ impl App {
                         tab.busy = false;
                     }
                     Event::FileContent { path, content } => {
-                        tab.editor = Some(crate::editor::RemoteEditor::new(path, content));
+                        if tab.editor.as_ref().is_some_and(|editor| editor.dirty) {
+                            tab.error = Some("Editor has unsaved changes; save or discard before opening another file".into());
+                        } else {
+                            tab.editor = Some(crate::editor::RemoteEditor::new(path, content));
+                        }
                         tab.busy = false;
+                    }
+                    Event::FileWriteComplete { path, operation_id } => {
+                        let close_editor = if let Some(editor) = &mut tab.editor {
+                            editor.complete_save(&path, operation_id)
+                                && editor.take_close_after_save()
+                        } else {
+                            false
+                        };
+                        let close_tab = close_editor && tab.close_after_editor;
+                        if close_editor {
+                            tab.editor = None;
+                        }
+                        if close_tab {
+                            tab.close_after_editor = false;
+                            close_tabs.push(tab.id);
+                        } else {
+                            let _ = tab
+                                .session
+                                .commands
+                                .try_send(Command::File(FileOperation::List(tab.path.clone())));
+                        }
+                    }
+                    Event::FileWriteError {
+                        path,
+                        operation_id,
+                        error,
+                    } => {
+                        if let Some(editor) = &mut tab.editor {
+                            if !editor.fail_save(&path, operation_id, error.clone()) {
+                                tab.error = Some(format!("SFTP write failed: {error}"));
+                            } else {
+                                tab.close_after_editor = false;
+                            }
+                        } else {
+                            tab.error = Some(format!("SFTP write failed: {error}"));
+                        }
                     }
                     Event::Processes(processes) => {
                         self.process_view.processes = processes;
@@ -673,13 +801,6 @@ impl App {
                         self.devops_ui.diag_results.push(res);
                     }
                     Event::OperationComplete => {
-                        if let Some(editor) = &mut tab.editor
-                            && editor.saving
-                        {
-                            editor.saving = false;
-                            editor.dirty = false;
-                            editor.original_content = editor.content.clone();
-                        }
                         let _ = tab
                             .session
                             .commands
@@ -753,8 +874,19 @@ impl App {
                 }
             }
         }
+        for id in close_tabs {
+            if let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
+                && self.tabs[index].editor.is_none()
+            {
+                for transfer in &self.tabs[index].transfers {
+                    transfer.request.cancel.cancel();
+                }
+                self.tabs.remove(index);
+            }
+        }
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
         for tunnel in auto_start_tunnels {
-            self.start_tunnel(tunnel);
+            self.start_tunnel(tunnel, ctx);
         }
         self.trust.retain(|prompt| {
             self.tabs.iter().any(|t| t.id == prompt.tab) && !prompt.reply.is_closed()
@@ -973,24 +1105,12 @@ impl App {
             .exact_height(44.0)
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    let mark_color = if dark {
-                        colors::FOREGROUND
-                    } else {
-                        colors::LIGHT_FOREGROUND
-                    };
-                    render_monogram(ui, 20.0, mark_color);
+                    render_monogram(ui, 20.0, dark);
                     ui.add_space(2.0);
                     ui.label(RichText::new("Kervesh").size(17.0).strong());
                     ui.label(RichText::new("by Kernovae").size(11.0).weak());
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Window controls decoration
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("✕").size(12.0).weak());
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("□").size(12.0).weak());
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("—").size(12.0).weak());
                         ui.add_space(16.0);
 
                         if ui_icon_label_button(ui, UiIcon::Settings, "Settings", dark).clicked() {
@@ -1003,9 +1123,6 @@ impl App {
                             self.settings.sftp_panel = !self.settings.sftp_panel;
                             let _ = self.store.save_settings(&self.settings);
                         }
-                        let split_btn = ui_icon_label_button(ui, UiIcon::Split, "Split", dark);
-                        split_btn.on_hover_text("Planned for v0.3");
-
                         if ui_icon_label_button(ui, UiIcon::NewConnection, "New", dark).clicked() {
                             self.open_new_host();
                         }
@@ -1032,17 +1149,14 @@ impl App {
             .exact_height(24.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Ready").small().weak());
+                    let workspace_status = self
+                        .tabs
+                        .get(self.active)
+                        .map(|tab| tab.status.as_str())
+                        .unwrap_or("Unknown");
+                    ui.label(RichText::new(workspace_status).small().weak());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        render_monogram(
-                            ui,
-                            14.0,
-                            if dark {
-                                colors::MUTED
-                            } else {
-                                colors::LIGHT_MUTED
-                            },
-                        );
+                        render_monogram(ui, 14.0, dark);
                         ui.label(RichText::new("Kernovae").small().weak());
                         ui.separator();
                         ui.label(RichText::new("🔒").small().weak());
@@ -1073,12 +1187,7 @@ impl App {
                 if self.tabs.is_empty() {
                     ui.vertical_centered(|ui| {
                         ui.add_space((ui.available_height() * 0.22).max(24.0));
-                        let mark_color = if dark {
-                            colors::FOREGROUND
-                        } else {
-                            colors::LIGHT_FOREGROUND
-                        };
-                        render_monogram(ui, 64.0, mark_color);
+                        render_monogram(ui, 64.0, dark);
                         ui.add_space(16.0);
                         ui.label(
                             RichText::new("Your hosts. Your keys.\nYour machine.")
@@ -1169,9 +1278,15 @@ impl App {
                                     &tab.host.name,
                                     egui::FontId::proportional(12.0),
                                     if selected {
-                                        colors::WHITE
-                                    } else {
+                                        if dark {
+                                            colors::FOREGROUND
+                                        } else {
+                                            colors::LIGHT_FOREGROUND
+                                        }
+                                    } else if dark {
                                         colors::MUTED
+                                    } else {
+                                        colors::LIGHT_MUTED
                                     },
                                 );
 
@@ -1207,7 +1322,20 @@ impl App {
                     });
 
                     if let Some(id) = close {
-                        self.confirmation = Some(Confirmation::CloseTab(id));
+                        if let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
+                            && self.tabs[index]
+                                .editor
+                                .as_ref()
+                                .is_some_and(|editor| editor.dirty)
+                        {
+                            self.active = index;
+                            self.tabs[index].close_after_editor = true;
+                            if let Some(editor) = &mut self.tabs[index].editor {
+                                editor.close_prompt = true;
+                            }
+                        } else {
+                            self.confirmation = Some(Confirmation::CloseTab(id));
+                        }
                     }
                     ui.separator();
 
@@ -1239,8 +1367,15 @@ impl App {
                         // SSH Badge
                         let (badge_rect, _) =
                             ui.allocate_exact_size(Vec2::new(34.0, 18.0), Sense::hover());
-                        ui.painter()
-                            .rect_filled(badge_rect, 3.0_f32, colors::DARK_PANEL_RAISED);
+                        ui.painter().rect_filled(
+                            badge_rect,
+                            3.0_f32,
+                            if dark {
+                                colors::DARK_PANEL_RAISED
+                            } else {
+                                colors::LIGHT_PANEL_RAISED
+                            },
+                        );
                         ui.painter().text(
                             badge_rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -1362,6 +1497,7 @@ impl App {
                             if ui.small_button("🔐 Vault & Keys").on_hover_text("Open encrypted master vault and SSH key generator").clicked() {
                                 self.vault_ui.open = true;
                                 self.vault_ui.refresh_keys(&self.store);
+                                self.vault_ui.refresh_vault_state(&self.store);
                             }
                             let rec_btn_text = if let Some(rec) = &tab.recorder {
                                 format!("⏹ REC ({:.0}s)", rec.duration_secs())
@@ -1416,9 +1552,15 @@ impl App {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let meta_str = if let Some(c) = &tab.capabilities {
-                                format!("{}  |  {}  |  {}", tab.host.hostname, c.os, c.kernel)
+                                let os = if c.os.is_empty() { "Unknown" } else { &c.os };
+                                let kernel = if c.kernel.is_empty() {
+                                    "Unknown"
+                                } else {
+                                    &c.kernel
+                                };
+                                format!("{}  |  {}  |  {}", tab.host.hostname, os, kernel)
                             } else {
-                                format!("{}  |  Linux  |  6.12.101-1-amd64", tab.host.hostname)
+                                format!("{}  |  Detecting…", tab.host.hostname)
                             };
                             ui.label(RichText::new(meta_str).small().weak());
                         });
@@ -1500,16 +1642,9 @@ impl App {
                                 if !action.input.is_empty() {
                                     for &b in &action.input {
                                         if b == b'\r' || b == b'\n' {
-                                            let cmd = tab.cmd_buffer.trim().to_string();
-                                            if !cmd.is_empty() {
-                                                let entry = kervesh_core::AuditCommandEntry::new(
-                                                    format!("{}", tab.id),
-                                                    &tab.host.id,
-                                                    &tab.host.name,
-                                                    cmd,
-                                                );
-                                                let _ = self.store.save_audit_command(&entry);
-                                            }
+                                            // Raw PTY input cannot distinguish shell commands from
+                                            // passwords, prompts, or application control data.
+                                            // Never persist it as an audit command.
                                             tab.cmd_buffer.clear();
                                         } else if b == 0x08 || b == 0x7f {
                                             tab.cmd_buffer.pop();
@@ -1530,16 +1665,6 @@ impl App {
                                         if !action.input.is_empty() {
                                             for &b in &action.input {
                                                 if b == b'\r' || b == b'\n' {
-                                                    let cmd = tab.cmd_buffer.trim().to_string();
-                                                    if !cmd.is_empty() {
-                                                        let entry = kervesh_core::AuditCommandEntry::new(
-                                                            format!("{}", tab.id),
-                                                            &tab.host.id,
-                                                            &tab.host.name,
-                                                            cmd,
-                                                        );
-                                                        let _ = self.store.save_audit_command(&entry);
-                                                    }
                                                     tab.cmd_buffer.clear();
                                                 } else if b == 0x08 || b == 0x7f {
                                                     tab.cmd_buffer.pop();
@@ -1556,10 +1681,10 @@ impl App {
                                     ui.separator();
                                     ui.allocate_ui(egui::vec2(w2, available.y), |ui| {
                                         if let Some(sec) = &mut tab.secondary_terminal {
-                                            let action = ui.push_id((tab.id, 1), |ui| sec.show(ui, tab.sftp_available)).inner;
-                                            if !action.input.is_empty() {
-                                                let _ = tab.session.commands.try_send(Command::Input(action.input));
-                                            }
+                                            ui.label(RichText::new("Mirror · read-only").small().weak());
+                                            ui.add_enabled_ui(false, |ui| {
+                                                let _ = ui.push_id((tab.id, 1), |ui| sec.show(ui, tab.sftp_available));
+                                            });
                                         }
                                     });
                                 });
@@ -1574,16 +1699,6 @@ impl App {
                                         if !action.input.is_empty() {
                                             for &b in &action.input {
                                                 if b == b'\r' || b == b'\n' {
-                                                    let cmd = tab.cmd_buffer.trim().to_string();
-                                                    if !cmd.is_empty() {
-                                                        let entry = kervesh_core::AuditCommandEntry::new(
-                                                            format!("{}", tab.id),
-                                                            &tab.host.id,
-                                                            &tab.host.name,
-                                                            cmd,
-                                                        );
-                                                        let _ = self.store.save_audit_command(&entry);
-                                                    }
                                                     tab.cmd_buffer.clear();
                                                 } else if b == 0x08 || b == 0x7f {
                                                     tab.cmd_buffer.pop();
@@ -1600,10 +1715,10 @@ impl App {
                                     ui.separator();
                                     ui.allocate_ui(egui::vec2(available.x, h2), |ui| {
                                         if let Some(sec) = &mut tab.secondary_terminal {
-                                            let action = ui.push_id((tab.id, 1), |ui| sec.show(ui, tab.sftp_available)).inner;
-                                            if !action.input.is_empty() {
-                                                let _ = tab.session.commands.try_send(Command::Input(action.input));
-                                            }
+                                            ui.label(RichText::new("Mirror · read-only").small().weak());
+                                            ui.add_enabled_ui(false, |ui| {
+                                                let _ = ui.push_id((tab.id, 1), |ui| sec.show(ui, tab.sftp_available));
+                                            });
                                         }
                                     });
                                 });
@@ -1698,7 +1813,7 @@ impl App {
         if let Some(action) = tunnel_action {
             match action {
                 crate::tunnels::TunnelAction::Start(config) => {
-                    self.start_tunnel(config);
+                    self.start_tunnel(config, ctx);
                 }
                 crate::tunnels::TunnelAction::Stop(id) => {
                     self.stop_tunnel(&id);
@@ -1994,8 +2109,13 @@ impl App {
 
         // Encrypted Vault & Key Inventory Modal
         let mut vault_action = None;
-        self.vault_ui
-            .render(ctx, &self.store, &self.hosts, &mut vault_action);
+        self.vault_ui.render(
+            ctx,
+            &self.runtime,
+            &self.store,
+            &self.hosts,
+            &mut vault_action,
+        );
         if let Some(act) = vault_action {
             match act {
                 crate::vault_ui::VaultUiAction::DeployKeyToHost {
@@ -2482,5 +2602,21 @@ impl eframe::App for App {
             self.confirmation = Some(Confirmation::Quit);
         }
         self.render(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finish_tunnel_attempt;
+    use std::collections::HashMap;
+
+    #[test]
+    fn stale_tunnel_attempt_cannot_finish_new_start() {
+        let mut starting = HashMap::from([(String::from("tunnel"), 2_u64)]);
+
+        assert!(!finish_tunnel_attempt(&mut starting, "tunnel", 1));
+        assert_eq!(starting.get("tunnel"), Some(&2));
+        assert!(finish_tunnel_attempt(&mut starting, "tunnel", 2));
+        assert!(starting.is_empty());
     }
 }

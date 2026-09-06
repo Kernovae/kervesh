@@ -782,11 +782,22 @@ impl App {
                 }
                 Confirmation::CloseTab(id) => {
                     if let Some(index) = self.tabs.iter().position(|t| t.id == id) {
-                        for transfer in &self.tabs[index].transfers {
-                            transfer.request.cancel.cancel();
+                        if self.tabs[index]
+                            .editor
+                            .as_ref()
+                            .is_some_and(|editor| editor.dirty)
+                        {
+                            self.notice = Some(
+                                "Unsaved editor changes kept open; save or discard before closing"
+                                    .into(),
+                            );
+                        } else {
+                            for transfer in &self.tabs[index].transfers {
+                                transfer.request.cancel.cancel();
+                            }
+                            self.tabs.remove(index);
+                            self.active = self.active.min(self.tabs.len().saturating_sub(1));
                         }
-                        self.tabs.remove(index);
-                        self.active = self.active.min(self.tabs.len().saturating_sub(1));
                     }
                 }
                 Confirmation::File(id, operation) => {

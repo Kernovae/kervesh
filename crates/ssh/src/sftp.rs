@@ -24,7 +24,7 @@ pub enum FileOperation {
     Delete(String, bool),
     Permissions(String, u32),
     Read(String),
-    Write(String, String),
+    Write(String, String, u64),
 }
 pub fn remote_join(parent: &str, name: &str) -> Result<String> {
     ensure!(
@@ -79,18 +79,117 @@ pub async fn read_file(sftp: &SftpSession, path: &str) -> Result<String> {
         String::from_utf8(buffer).map_err(|_| anyhow::anyhow!("File is not valid UTF-8 text"))?;
     Ok(content)
 }
-pub async fn write_file(sftp: &SftpSession, path: &str, content: &str) -> Result<()> {
+async fn write_file_to_temp(
+    sftp: &SftpSession,
+    path: &str,
+    content: &str,
+    temp_path: String,
+    backup_path: String,
+) -> Result<()> {
     use tokio::io::AsyncWriteExt;
+    let existing = if sftp.try_exists(path).await? {
+        let metadata = sftp.metadata(path).await?;
+        ensure!(
+            metadata.is_regular(),
+            "Selected destination is not a regular file"
+        );
+        Some(metadata)
+    } else {
+        None
+    };
     let mut file = sftp
         .open_with_flags(
-            path,
-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+            &temp_path,
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
         )
         .await?;
-    file.write_all(content.as_bytes()).await?;
-    file.flush().await?;
-    let _ = file.close().await;
-    Ok(())
+    let result = async {
+        let write_result = file.write_all(content.as_bytes()).await;
+        let flush_result = if write_result.is_ok() {
+            file.flush().await
+        } else {
+            Ok(())
+        };
+        let close_result = file.close().await;
+        write_result?;
+        flush_result?;
+        close_result?;
+
+        if let Some(metadata) = &existing {
+            // Preserve the attributes that can be applied without changing
+            // ownership. Some servers reject ownership/time fields, so retry
+            // with the portable permission field before giving up.
+            let attributes = FileAttributes {
+                uid: metadata.uid,
+                user: metadata.user.clone(),
+                gid: metadata.gid,
+                group: metadata.group.clone(),
+                permissions: metadata.permissions,
+                atime: metadata.atime,
+                mtime: metadata.mtime,
+                ..Default::default()
+            };
+            if sftp.set_metadata(&temp_path, attributes).await.is_err()
+                && let Some(permissions) = metadata.permissions
+            {
+                sftp.set_metadata(
+                    &temp_path,
+                    FileAttributes {
+                        permissions: Some(permissions),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+
+            // Keep the old destination until the new file has been published;
+            // this gives servers without overwrite-on-rename a safe path and
+            // lets us restore the old file if publication fails.
+            ensure!(
+                !sftp.try_exists(&backup_path).await?,
+                "Refusing overwrite: backup path already exists"
+            );
+            sftp.rename(path, &backup_path).await?;
+            match sftp.rename(&temp_path, path).await {
+                Ok(()) => {
+                    sftp.remove_file(&backup_path).await.map_err(|error| {
+                        anyhow::anyhow!(
+                            "File saved, but old destination cleanup failed: {error}; backup: {backup_path}"
+                        )
+                    })?;
+                }
+                Err(error) => {
+                    let restored = sftp.rename(&backup_path, path).await;
+                    return Err(anyhow::anyhow!(
+                        "Could not replace destination: {error}; restore result: {restored:?}"
+                    ));
+                }
+            }
+        } else {
+            sftp.rename(&temp_path, path).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = sftp.remove_file(&temp_path).await;
+    }
+    result
+}
+
+pub async fn write_file(sftp: &SftpSession, path: &str, content: &str) -> Result<()> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    write_file_to_temp(
+        sftp,
+        path,
+        content,
+        format!("{path}.kervesh-tmp-{nonce}"),
+        format!("{path}.kervesh-backup-{nonce}"),
+    )
+    .await
 }
 pub async fn operate(sftp: &SftpSession, operation: FileOperation) -> Result<()> {
     match operation {
@@ -123,7 +222,26 @@ pub async fn operate(sftp: &SftpSession, operation: FileOperation) -> Result<()>
             )
             .await?;
         }
-        FileOperation::List(_) | FileOperation::Read(_) | FileOperation::Write(_, _) => {}
+        FileOperation::List(_) | FileOperation::Read(_) | FileOperation::Write(_, _, _) => {}
     }
     Ok(())
+}
+
+/// Write through a uniquely named sibling and publish with one remote rename.
+/// A failed write leaves the existing destination untouched when the server
+/// provides the usual SFTP rename semantics.
+pub async fn write_file_atomic(
+    sftp: &SftpSession,
+    path: &str,
+    content: &str,
+    operation_id: u64,
+) -> Result<()> {
+    write_file_to_temp(
+        sftp,
+        path,
+        content,
+        format!("{path}.kervesh-tmp-{operation_id}"),
+        format!("{path}.kervesh-backup-{operation_id}"),
+    )
+    .await
 }

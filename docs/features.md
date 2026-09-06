@@ -25,7 +25,7 @@ Kervesh integrates terminal emulation, remote file management, network routing, 
 ### Terminal Engine & Display
 - **Alacritty VT Core**: Full support for ANSI 256 colors, 24-bit TrueColor, alternate screen buffer, UTF-8 combining sequences, and 2x4 Braille graphic rendering.
 - **Custom Monospace Typography**: Primary font family selection with up to 8 ordered font fallbacks and subpixel cell metrics.
-- **Split Panes**: Vertical and horizontal workspace splitting for multi-tasking across multiple terminal viewports.
+- **Split Views**: Vertical and horizontal read-only mirror views of the active PTY output. Both views share one shell session; they are not independent panes.
 - **Clipboard Profiles**:
   - *Desktop Mode*: `Ctrl+C` smart copy / interrupt, `Ctrl+V` paste, `Ctrl+Shift+C/V` shortcuts.
   - *Traditional Mode*: Literal control bytes for Unix command compatibility.
@@ -35,7 +35,7 @@ Kervesh integrates terminal emulation, remote file management, network routing, 
 - **Local Scrollback Search**: `Ctrl+F` in-memory regex and literal search with immediate match navigation.
 - **Hyperlink & Path Navigation**: Automatic detection of OSC 8 hyperlinks, standard web URLs, and remote file paths with 1-click "Reveal in SFTP".
 - **Session Recording**: Multi-format session recording engine supporting Asciicast v2 (`.cast`), Clean Text (`.txt`), and Raw Byte Streams (`.raw`).
-- **Trigger-Action Rules Engine**: Regex pattern monitoring on terminal output streams triggering desktop notifications, audible bells, or automated key injection.
+- **Trigger-Action Rules Engine**: Regex pattern monitoring on terminal output streams triggering desktop notifications, audible bells, or automated key injection. Raw PTY input is not stored as command history because it can contain passwords and control bytes.
 
 ---
 

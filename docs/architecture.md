@@ -66,7 +66,7 @@ Asynchronous networking, channel multiplexing, and protocol clients:
 ### `kervesh` (`crates/app`)
 Desktop graphical interface and workspace management:
 - **UI Engine**: Pure immediate-mode GUI powered by `egui` and `eframe` rendered via OpenGL / Glow.
-- **Multi-Session Workspace**: Tabbed interface with split panes (Vertical / Horizontal), broadcast command bar, and cluster reconnection.
+- **Multi-Session Workspace**: Tabbed interface with read-only split mirror views (Vertical / Horizontal), broadcast command bar, and cluster reconnection.
 - **Integrated Tooling**:
   - Remote File Browser with syntax-highlighting text editor and atomic remote saving.
   - Interactive Process Manager with sortable columns and signal dispatching (`SIGTERM`, `SIGKILL`, `SIGHUP`).
@@ -87,7 +87,7 @@ Desktop graphical interface and workspace management:
   OpenGL Display                                            SSH Channel      SSH Channel
 ```
 
-1. **Decoupled Architecture**: The GUI main thread operates strictly as an immediate-mode renderer and event dispatcher. Heavy operations (network I/O, file transfers, cryptography, regex scans) execute entirely on the Tokio asynchronous background worker pool.
+1. **Decoupled Architecture**: The GUI main thread operates as an immediate-mode renderer and event dispatcher. Network I/O, file transfers, tunnel startup, regex scans, and vault cryptographic operations execute through background tasks. Results return through generation-checked channels, so closing or locking a vault cannot apply a late unlock or write result.
 2. **Channel Communication**: Communication between the UI and async subsystems uses bounded `tokio::sync::mpsc` channels and lock-free atomic queues.
 3. **Zero RAM Bloat Transfers**: File transfers stream data in fixed 64 KiB buffers directly between disk and socket, ensuring multi-gigabyte transfers consume minimal constant memory.
 

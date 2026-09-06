@@ -75,11 +75,10 @@ impl App {
                         );
                     }
                 }
-                // Tab Header: SFTP / File Browser / Bookmarks
+                // This panel is the SFTP file browser; unused tab labels only
+                // suggested functionality that had no backing state.
                 ui.horizontal(|ui| {
-                    let _ = ui.selectable_label(true, "SFTP");
-                    let _ = ui.selectable_label(false, "File Browser");
-                    let _ = ui.selectable_label(false, "Bookmarks");
+                    ui.label(RichText::new("FILES").small().strong());
 
                     if tab.busy {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -89,19 +88,26 @@ impl App {
                 });
                 ui.separator();
 
+                let mut path_has_focus = false;
+                let mut filter_has_focus = false;
                 ui.add_enabled_ui(tab.connected, |ui| {
                     // Navigation bar: Back, Forward, Path Edit, Actions
                     ui.horizontal(|ui| {
                         if ui_icon_button(ui, UiIcon::Back, "Back (Alt+Left)", dark).clicked()
                             && let Some(path) = tab.history.pop()
                         {
+                            tab.forward.push(tab.path.clone());
                             operation = Some((id, FileOperation::List(path)));
                         }
-                        if ui_icon_button(ui, UiIcon::Forward, "Forward", dark).clicked() {
-                            // Forward placeholder if history stack supports it
+                        if ui_icon_button(ui, UiIcon::Forward, "Forward", dark).clicked()
+                            && let Some(path) = tab.forward.pop()
+                        {
+                            tab.history.push(tab.path.clone());
+                            operation = Some((id, FileOperation::List(path)));
                         }
                         if ui_icon_button(ui, UiIcon::Parent, "Parent directory", dark).clicked() {
                             tab.history.push(tab.path.clone());
+                            tab.forward.clear();
                             operation = Some((id, FileOperation::List(format!("{}/..", tab.path))));
                         }
                         if ui_icon_button(ui, UiIcon::Refresh, "Refresh", dark).clicked() {
@@ -144,17 +150,20 @@ impl App {
                             .hint_text("Remote path…")
                             .desired_width(f32::INFINITY),
                     );
+                    path_has_focus = path_resp.has_focus();
                     if path_resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                         tab.history.push(tab.path.clone());
+                        tab.forward.clear();
                         operation = Some((id, FileOperation::List(tab.path_input.clone())));
                     }
 
                     // Search / filter files
-                    ui.add(
+                    let filter_resp = ui.add(
                         egui::TextEdit::singleline(&mut tab.filter)
                             .hint_text("Filter files…")
                             .desired_width(f32::INFINITY),
                     );
+                    filter_has_focus = filter_resp.has_focus();
                 });
 
                 ui.separator();
@@ -184,6 +193,11 @@ impl App {
                     colors::FOREGROUND
                 } else {
                     colors::LIGHT_FOREGROUND
+                };
+                let muted_color = if dark {
+                    colors::MUTED
+                } else {
+                    colors::LIGHT_MUTED
                 };
 
                 // File rows list
@@ -221,6 +235,7 @@ impl App {
                             );
                             if response.double_clicked() {
                                 tab.history.push(tab.path.clone());
+                                tab.forward.clear();
                                 operation =
                                     Some((id, FileOperation::List(format!("{}/..", tab.path))));
                             }
@@ -271,7 +286,7 @@ impl App {
                                 Pos2::new(item_rect.min.x + 6.0, item_rect.min.y + 4.0),
                                 Vec2::splat(16.0),
                             );
-                            paint_file_icon(ui.painter(), icon_rect, file_type, text_color);
+                            paint_file_icon(ui.painter(), icon_rect, file_type, dark);
 
                             // Calculate column text bounds
                             let mut text_end = item_rect.max.x - 6.0;
@@ -285,7 +300,7 @@ impl App {
                                     egui::Align2::RIGHT_TOP,
                                     &date_str,
                                     egui::FontId::proportional(12.0),
-                                    colors::MUTED,
+                                    muted_color,
                                 );
                                 text_end -= 85.0;
                             }
@@ -302,7 +317,7 @@ impl App {
                                     egui::Align2::RIGHT_TOP,
                                     &size_str,
                                     egui::FontId::proportional(12.0),
-                                    colors::MUTED,
+                                    muted_color,
                                 );
                                 text_end -= 60.0;
                             }
@@ -320,11 +335,7 @@ impl App {
                                 egui::Align2::LEFT_TOP,
                                 &entry.name,
                                 egui::FontId::proportional(13.0),
-                                if is_selected {
-                                    colors::WHITE
-                                } else {
-                                    text_color
-                                },
+                                text_color,
                             );
 
                             let path = match remote_join(&tab.path, &entry.name) {
@@ -335,6 +346,7 @@ impl App {
                             if response.double_clicked() {
                                 if entry.directory || entry.symlink {
                                     tab.history.push(tab.path.clone());
+                                    tab.forward.clear();
                                     operation = Some((id, FileOperation::List(path.clone())));
                                 } else {
                                     operation = Some((id, FileOperation::Read(path.clone())));
@@ -379,6 +391,7 @@ impl App {
                                 .context_menu(|ui| {
                                     if entry.directory && ui.button("Open").clicked() {
                                         tab.history.push(tab.path.clone());
+                                        tab.forward.clear();
                                         operation = Some((id, FileOperation::List(path.clone())));
                                         ui.close();
                                     }
@@ -439,17 +452,24 @@ impl App {
 
                         // Keyboard navigation handling for selected file
                         if let Some(selected) = &tab.selected {
-                            if ui.input(|i| i.key_pressed(Key::Enter)) {
+                            if !path_has_focus
+                                && !filter_has_focus
+                                && ui.input(|i| i.key_pressed(Key::Enter))
+                            {
                                 let path =
                                     remote_join(&tab.path, &selected.name).unwrap_or_default();
                                 if selected.directory || selected.symlink {
                                     tab.history.push(tab.path.clone());
+                                    tab.forward.clear();
                                     operation = Some((id, FileOperation::List(path)));
                                 } else {
                                     operation = Some((id, FileOperation::Read(path)));
                                 }
                             }
-                            if ui.input(|i| i.key_pressed(Key::F2)) {
+                            if !path_has_focus
+                                && !filter_has_focus
+                                && ui.input(|i| i.key_pressed(Key::F2))
+                            {
                                 let path =
                                     remote_join(&tab.path, &selected.name).unwrap_or_default();
                                 dialog = Some(FileDialog {
@@ -459,7 +479,10 @@ impl App {
                                     error: None,
                                 });
                             }
-                            if ui.input(|i| i.key_pressed(Key::Delete)) {
+                            if !path_has_focus
+                                && !filter_has_focus
+                                && ui.input(|i| i.key_pressed(Key::Delete))
+                            {
                                 let path =
                                     remote_join(&tab.path, &selected.name).unwrap_or_default();
                                 deletion = Some(Confirmation::File(
@@ -467,7 +490,9 @@ impl App {
                                     FileOperation::Delete(path, selected.directory),
                                 ));
                             }
-                            if ui.input(|i| i.modifiers.command && i.key_pressed(Key::C))
+                            if !path_has_focus
+                                && !filter_has_focus
+                                && ui.input(|i| i.modifiers.command && i.key_pressed(Key::C))
                                 && let Ok(path) = remote_join(&tab.path, &selected.name)
                             {
                                 ui.ctx().copy_text(path);
@@ -475,10 +500,13 @@ impl App {
                         }
 
                         // Alt+Left or Backspace to go back
-                        if (ui.input(|i| i.modifiers.alt && i.key_pressed(Key::ArrowLeft))
-                            || ui.input(|i| i.key_pressed(Key::Backspace)))
+                        if !path_has_focus
+                            && !filter_has_focus
+                            && (ui.input(|i| i.modifiers.alt && i.key_pressed(Key::ArrowLeft))
+                                || ui.input(|i| i.key_pressed(Key::Backspace)))
                             && let Some(path) = tab.history.pop()
                         {
+                            tab.forward.push(tab.path.clone());
                             operation = Some((id, FileOperation::List(path)));
                         }
 
@@ -597,6 +625,8 @@ impl App {
         };
         let mut open = true;
         let mut save = false;
+        let mut save_and_close = false;
+        let mut discard = false;
         let tab_id = tab.id;
         let title = format!(
             "Edit — {} ({}){}",
@@ -629,7 +659,10 @@ impl App {
                         {
                             save = true;
                         }
-                        if ui.button("Save As…").clicked() {
+                        if ui
+                            .add_enabled(!editor.saving, egui::Button::new("Save As…"))
+                            .clicked()
+                        {
                             editor.save_as_open = !editor.save_as_open;
                         }
                     }
@@ -640,6 +673,7 @@ impl App {
 
                     // Line endings switch
                     let ending_label = editor.line_ending.as_str();
+                    let previous_line_ending = editor.line_ending;
                     egui::ComboBox::from_id_salt("editor_line_ending")
                         .selected_text(ending_label)
                         .show_ui(ui, |ui| {
@@ -654,6 +688,9 @@ impl App {
                                 "CRLF (Windows)",
                             );
                         });
+                    if editor.line_ending != previous_line_ending {
+                        editor.mark_changed();
+                    }
 
                     ui.label(
                         RichText::new(format!(
@@ -675,16 +712,18 @@ impl App {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.label("Save as path:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut editor.save_as_input)
-                                    .desired_width(320.0),
-                            );
-                            if ui.button("Save to new path").clicked()
-                                && !editor.save_as_input.trim().is_empty()
-                            {
-                                save_as_path = Some(editor.save_as_input.trim().to_string());
-                                editor.save_as_open = false;
-                            }
+                            ui.add_enabled_ui(!editor.saving, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut editor.save_as_input)
+                                        .desired_width(320.0),
+                                );
+                                if ui.button("Save to new path").clicked()
+                                    && !editor.save_as_input.trim().is_empty()
+                                {
+                                    save_as_path = Some(editor.save_as_input.trim().to_string());
+                                    editor.save_as_open = false;
+                                }
+                            });
                             if ui.button("Cancel").clicked() {
                                 editor.save_as_open = false;
                             }
@@ -759,31 +798,93 @@ impl App {
                                 .desired_width(f32::INFINITY);
                             let response = ui.add(text_edit);
                             if response.changed() {
-                                editor.dirty = true;
+                                editor.mark_changed();
                             }
                         });
                     });
             });
 
-        if let Some(new_path) = save_as_path {
-            editor.path = new_path.clone();
-            editor.name = new_path.rsplit('/').next().unwrap_or(&new_path).to_string();
+        if !open {
+            if editor.dirty {
+                editor.close_prompt = true;
+            } else {
+                tab.editor = None;
+                return;
+            }
+        }
+
+        if editor.close_prompt {
+            let mut prompt_open = true;
+            egui::Window::new("Unsaved changes")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut prompt_open)
+                .show(ctx, |ui| {
+                    ui.label("This remote file has unsaved changes.");
+                    ui.label("Save changes before closing?");
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            save_and_close = true;
+                        }
+                        if ui.button("Discard").clicked() {
+                            discard = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            editor.close_prompt = false;
+                            tab.close_after_editor = false;
+                        }
+                    });
+                });
+            if !prompt_open {
+                editor.close_prompt = false;
+                tab.close_after_editor = false;
+            }
+            if discard {
+                editor.close_prompt = false;
+            }
+        }
+
+        let save_target = save_as_path;
+        if save_target.is_some() {
             save = true;
         }
 
-        let to_save = if save {
-            editor.saving = true;
-            editor.error = None;
-            let final_content = editor.prepare_save_content();
-            Some((editor.path.clone(), final_content))
+        let to_save = if save_and_close {
+            editor.close_prompt = false;
+            editor.request_close_after_save()
+        } else if save {
+            // Save As and explicit saves must work even when content has no edits.
+            if !editor.dirty {
+                editor.mark_changed();
+            }
+            editor.begin_save_to(save_target.unwrap_or_else(|| editor.path.clone()))
         } else {
             None
         };
-        if !open {
+        if discard {
+            let close_tab = tab.close_after_editor;
             tab.editor = None;
+            if close_tab {
+                tab.close_after_editor = false;
+                if let Some(index) = self
+                    .tabs
+                    .iter()
+                    .position(|candidate| candidate.id == tab_id)
+                {
+                    for transfer in &self.tabs[index].transfers {
+                        transfer.request.cancel.cancel();
+                    }
+                    self.tabs.remove(index);
+                    self.active = self.active.min(self.tabs.len().saturating_sub(1));
+                }
+            }
+            return;
         }
-        if let Some((path, content)) = to_save {
-            self.send(tab_id, Command::File(FileOperation::Write(path, content)));
+        if let Some((path, content, operation_id)) = to_save {
+            self.send(
+                tab_id,
+                Command::File(FileOperation::Write(path, content, operation_id)),
+            );
         }
     }
 
