@@ -146,9 +146,7 @@ impl RemoteEditor {
         if self.case_sensitive {
             self.content.matches(&self.search_query).count()
         } else {
-            let lower_content = self.content.to_lowercase();
-            let lower_query = self.search_query.to_lowercase();
-            lower_content.matches(&lower_query).count()
+            case_insensitive_ranges(&self.content, &self.search_query).len()
         }
     }
 
@@ -156,15 +154,16 @@ impl RemoteEditor {
         if self.search_query.is_empty() {
             return false;
         }
-        if let Some(idx) = if self.case_sensitive {
-            self.content.find(&self.search_query)
-        } else {
-            let lower_content = self.content.to_lowercase();
-            let lower_query = self.search_query.to_lowercase();
-            lower_content.find(&lower_query)
-        } {
+        if let Some((start, end)) = if self.case_sensitive {
             self.content
-                .replace_range(idx..idx + self.search_query.len(), &self.replace_query);
+                .find(&self.search_query)
+                .map(|start| (start, start + self.search_query.len()))
+        } else {
+            case_insensitive_ranges(&self.content, &self.search_query)
+                .into_iter()
+                .next()
+        } {
+            self.content.replace_range(start..end, &self.replace_query);
             self.dirty = true;
             true
         } else {
@@ -183,20 +182,113 @@ impl RemoteEditor {
                     .content
                     .replace(&self.search_query, &self.replace_query);
             } else {
-                let lower_query = self.search_query.to_lowercase();
-                let mut result = String::with_capacity(self.content.len());
-                let mut last_idx = 0;
-                let lower_content = self.content.to_lowercase();
-                for (start_idx, _) in lower_content.match_indices(&lower_query) {
-                    result.push_str(&self.content[last_idx..start_idx]);
-                    result.push_str(&self.replace_query);
-                    last_idx = start_idx + self.search_query.len();
+                let ranges = case_insensitive_ranges(&self.content, &self.search_query);
+                let mut result = self.content.clone();
+                for (start, end) in ranges.into_iter().rev() {
+                    result.replace_range(start..end, &self.replace_query);
                 }
-                result.push_str(&self.content[last_idx..]);
                 self.content = result;
             }
             self.dirty = true;
         }
         count
+    }
+}
+
+/// Return byte ranges in the original string for matches in its Unicode lowercase form.
+/// Lowercase conversion can expand a character (for example, `İ` becomes `i` plus a
+/// combining dot), so offsets from the transformed string must never be used directly
+/// with the source string.
+fn case_insensitive_ranges(content: &str, query: &str) -> Vec<(usize, usize)> {
+    let lower_query = fold_case(query);
+    if lower_query.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lower_content = String::with_capacity(content.len());
+    let mut lower_char_ranges = Vec::new();
+    for (start, ch) in content.char_indices() {
+        let end = start + ch.len_utf8();
+        for lower_ch in fold_case(&ch.to_string()).chars() {
+            lower_content.push(lower_ch);
+            lower_char_ranges.push((start, end));
+        }
+    }
+
+    let mut ranges = lower_content
+        .match_indices(&lower_query)
+        .filter_map(|(lower_start, matched)| {
+            let lower_end = lower_start + matched.len();
+            let start_char = lower_content[..lower_start].chars().count();
+            let end_char = lower_content[..lower_end].chars().count();
+            let start = lower_char_ranges.get(start_char)?.0;
+            let end = lower_char_ranges.get(end_char.checked_sub(1)?)?.1;
+            Some((start, end))
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some((_, previous_end)) = merged.last_mut()
+            && start < *previous_end
+        {
+            continue;
+        }
+        merged.push((start, end));
+    }
+    merged
+}
+
+fn fold_case(value: &str) -> String {
+    value.to_lowercase().replace('ς', "σ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RemoteEditor, case_insensitive_ranges};
+
+    #[test]
+    fn case_insensitive_replace_handles_lowercase_expanding_unicode() {
+        let mut editor = RemoteEditor::new("unicode.txt".into(), "İx".into());
+        editor.search_query = "i".into();
+        editor.replace_query = "Z".into();
+
+        assert!(editor.replace_next());
+        assert_eq!(editor.content, "Zx");
+    }
+
+    #[test]
+    fn case_insensitive_replace_all_preserves_unicode_boundaries() {
+        let mut editor = RemoteEditor::new("unicode.txt".into(), "İ İ".into());
+        editor.search_query = "i".into();
+        editor.replace_query = "Z".into();
+
+        assert_eq!(editor.replace_all(), 2);
+        assert_eq!(editor.content, "Z Z");
+    }
+
+    #[test]
+    fn case_insensitive_search_case_folds_greek_sigma_variants() {
+        let mut editor = RemoteEditor::new("unicode.txt".into(), "ΟΣ ος ΟΣ".into());
+        editor.search_query = "ς".into();
+
+        assert_eq!(editor.count_search_matches(), 3);
+    }
+
+    #[test]
+    fn case_insensitive_ranges_are_non_overlapping_after_unicode_expansion() {
+        let ranges = case_insensitive_ranges("İİİ", "\u{307}i");
+
+        assert_eq!(ranges, vec![(0, "İİ".len())]);
+    }
+
+    #[test]
+    fn case_insensitive_replace_all_skips_overlapping_unicode_matches() {
+        let mut editor = RemoteEditor::new("unicode.txt".into(), "İİİ".into());
+        editor.search_query = "\u{307}i".into();
+        editor.replace_query = "Z".into();
+
+        assert_eq!(editor.replace_all(), 1);
+        assert_eq!(editor.content, "Zİ");
     }
 }
